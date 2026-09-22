@@ -1,9 +1,11 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getStatus } from "@/lib/monitor/service";
 
-export async function GET() {
+/** 获取监控状态：?view=all | <账号数据库 ID> */
+export async function GET(req: NextRequest) {
   try {
-    const status = await getStatus();
+    const view = req.nextUrl.searchParams.get("view") || "all";
+    const status = await getStatus(view);
     return NextResponse.json(status);
   } catch (err) {
     return NextResponse.json(

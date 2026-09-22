@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAccount, setQuota } from "@/lib/monitor/service";
+import { setQuota } from "@/lib/monitor/service";
 
 export async function PUT(req: NextRequest) {
   try {
-    const body = (await req.json()) as { metric?: string; quota?: number };
-    const account = await getAccount();
-    if (!account) {
+    const body = (await req.json()) as {
+      accountId?: string;
+      metric?: string;
+      quota?: number;
+    };
+    if (!body.accountId) {
       return NextResponse.json(
-        { ok: false, error: "尚未配置账号" },
+        { ok: false, error: "缺少账号标识" },
         { status: 400 }
       );
     }
@@ -17,7 +20,7 @@ export async function PUT(req: NextRequest) {
         { status: 400 }
       );
     }
-    await setQuota(account.accountId, body.metric, body.quota);
+    await setQuota(body.accountId, body.metric, body.quota);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

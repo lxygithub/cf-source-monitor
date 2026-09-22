@@ -1,35 +1,47 @@
 "use client";
 
-import { Cloud, RefreshCw, Settings2 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { Cloud, RefreshCw, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { formatTime } from "@/lib/format";
-import type { ConfigInfo } from "@/lib/monitor/types";
+import type { AccountInfo } from "@/lib/monitor/types";
 
 interface MonitorHeaderProps {
-  config: ConfigInfo | null;
+  accounts: AccountInfo[];
+  accountCount: number;
+  view: string;
   lastRefreshAt: string | null;
   refreshing: boolean;
   autoRefresh: boolean;
   onAutoRefreshChange: (v: boolean) => void;
+  onViewChange: (v: string) => void;
   onRefresh: () => void;
-  onOpenSettings: () => void;
+  onOpenAccounts: () => void;
 }
 
 export function MonitorHeader({
-  config,
+  accounts,
+  accountCount,
+  view,
   lastRefreshAt,
   refreshing,
   autoRefresh,
   onAutoRefreshChange,
+  onViewChange,
   onRefresh,
-  onOpenSettings,
+  onOpenAccounts,
 }: MonitorHeaderProps) {
   return (
     <header className="sticky top-0 z-40 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
-      <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6">
+      <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-2 px-4 sm:gap-3 sm:px-6">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-orange-500 text-white">
             <Cloud className="size-4.5" />
@@ -42,14 +54,27 @@ export function MonitorHeader({
               最近刷新：{formatTime(lastRefreshAt)}
             </p>
           </div>
-          {config?.demo && (
-            <Badge className="hidden border-transparent bg-amber-100 text-amber-700 sm:inline-flex dark:bg-amber-950/60 dark:text-amber-400">
-              演示数据
-            </Badge>
-          )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
+          {accountCount >= 2 && (
+            <Select value={view} onValueChange={onViewChange}>
+              <SelectTrigger
+                className="h-9 w-[118px] text-xs sm:w-[150px] sm:text-sm"
+                aria-label="切换账号视图"
+              >
+                <SelectValue placeholder="账号" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部账号（{accountCount}）</SelectItem>
+                {accounts.map((a) => (
+                  <SelectItem key={a.id} value={a.id}>
+                    {a.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <div className="hidden items-center gap-2 md:flex">
             <Switch
               id="auto-refresh"
@@ -77,11 +102,11 @@ export function MonitorHeader({
           <Button
             variant="outline"
             size="sm"
-            onClick={onOpenSettings}
-            aria-label="打开账号设置"
+            onClick={onOpenAccounts}
+            aria-label="管理账号"
           >
-            <Settings2 className="size-4" />
-            <span className="hidden sm:inline">设置</span>
+            <Users className="size-4" />
+            <span className="hidden sm:inline">账号</span>
           </Button>
         </div>
       </div>

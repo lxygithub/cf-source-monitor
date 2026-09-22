@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { clearConfig, getConfigInfo, saveConfig } from "@/lib/monitor/service";
+import { addAccount, listAccountInfos } from "@/lib/monitor/service";
 
+/** 账号列表 */
 export async function GET() {
-  const config = await getConfigInfo();
-  return NextResponse.json(config);
+  const accounts = await listAccountInfos();
+  return NextResponse.json({ accounts });
 }
 
-export async function PUT(req: NextRequest) {
+/** 添加账号 */
+export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as {
       name?: string;
@@ -17,7 +19,11 @@ export async function PUT(req: NextRequest) {
     const apiToken = body.apiToken?.trim();
     if (!accountId || !/^[a-f0-9]{32}$/i.test(accountId)) {
       return NextResponse.json(
-        { ok: false, error: "Account ID 格式不正确（应为 32 位十六进制字符串）" },
+        {
+          ok: false,
+          error:
+            "Account ID 格式不正确（应为 32 位十六进制字符串，演示账号除外）",
+        },
         { status: 400 }
       );
     }
@@ -27,17 +33,15 @@ export async function PUT(req: NextRequest) {
         { status: 400 }
       );
     }
-    await saveConfig({ name: body.name, accountId, apiToken });
-    return NextResponse.json({ ok: true, config: await getConfigInfo() });
+    const result = await addAccount({ name: body.name, accountId, apiToken });
+    if (!result.ok) {
+      return NextResponse.json({ ok: false, error: result.error }, { status: 400 });
+    }
+    return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
       { ok: false, error: err instanceof Error ? err.message : "保存失败" },
       { status: 500 }
     );
   }
-}
-
-export async function DELETE() {
-  await clearConfig();
-  return NextResponse.json({ ok: true });
 }

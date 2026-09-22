@@ -45,22 +45,46 @@ export interface MetricStatus {
   customId?: string;
   /** 近 7 日趋势（按天去重，每天取最后一次快照） */
   history: { date: string; used: number }[];
+  /** 所属账号（本系统数据库记录 ID） */
+  accountDbId: string;
+  /** Cloudflare Account ID */
+  accountId: string;
+  /** 账号备注名（多账号分组展示 / 告警前缀） */
+  accountName: string;
 }
 
-/** 账号配置（脱敏后返回前端） */
-export interface ConfigInfo {
-  configured: boolean;
+/** 单个账号的监控分组 */
+export interface AccountGroup {
+  /** 本系统数据库记录 ID */
+  id: string;
+  name: string;
+  /** Cloudflare Account ID */
+  accountId: string;
   demo: boolean;
-  name?: string;
-  accountId?: string;
-  hasToken?: boolean;
+  lastRefreshAt: string | null;
+  metrics: MetricStatus[];
+  builtin: MetricStatus[];
+  custom: MetricStatus[];
+}
+
+/** 账号摘要信息（账号列表 / 下拉选择） */
+export interface AccountInfo {
+  id: string;
+  name: string;
+  accountId: string;
+  demo: boolean;
 }
 
 /** 页面总状态 */
 export interface MonitorStatus {
-  config: ConfigInfo;
+  /** 当前视图："all" 或账号数据库 ID */
+  view: string;
+  /** 当前视图下的账号分组 */
+  accounts: AccountGroup[];
+  /** 全部账号列表（用于切换器 / 账号管理） */
+  accountList: AccountInfo[];
+  accountCount: number;
   lastRefreshAt: string | null;
-  metrics: MetricStatus[];
   summary: {
     total: number;
     ok: number;
@@ -72,9 +96,8 @@ export interface MonitorStatus {
   errors: string[];
 }
 
-/** 用量接口返回 */
+/** 用量刷新接口返回 */
 export interface RefreshResult {
   ok: boolean;
   errors: string[];
-  status?: MonitorStatus;
 }

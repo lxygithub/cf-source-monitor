@@ -1,31 +1,30 @@
-import { NextResponse } from "next/server";
-import {
-  DEMO_ACCOUNT_ID,
-  getAccount,
-  getStatus,
-  refreshDemo,
-  refreshRealAccount,
-} from "@/lib/monitor/service";
+import { NextRequest, NextResponse } from "next/server";
+import { refreshAccounts } from "@/lib/monitor/service";
 
-export async function POST() {
+/** 刷新用量：body.accountId 指定单个账号，缺省刷新全部 */
+export async function POST(req: NextRequest) {
   try {
-    const account = await getAccount();
-    if (!account) {
+    let accountId: string | undefined;
+    try {
+      const body = (await req.json()) as { accountId?: string };
+      accountId = body?.accountId;
+    } catch {
+      // 无 body 时视为全部刷新
+    }
+
+    const { errors, refreshed } = await refreshAccounts(
+      accountId ? [accountId] : undefined
+    );
+    if (refreshed === 0) {
       return NextResponse.json(
-        { ok: false, errors: ["尚未配置账号，请先在设置中填写 Account ID 与 API Token"] },
+        {
+          ok: false,
+          errors: ["未找到要刷新的账号，请先在「账号」中添加"],
+        },
         { status: 400 }
       );
     }
-
-    let errors: string[];
-    if (account.accountId === DEMO_ACCOUNT_ID) {
-      ({ errors } = await refreshDemo());
-    } else {
-      ({ errors } = await refreshRealAccount(account.accountId, account.apiToken));
-    }
-
-    const status = await getStatus(errors);
-    return NextResponse.json({ ok: true, errors, status });
+    return NextResponse.json({ ok: true, errors, refreshed });
   } catch (err) {
     return NextResponse.json(
       {

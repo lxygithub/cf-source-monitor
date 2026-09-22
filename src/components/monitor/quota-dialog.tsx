@@ -46,7 +46,11 @@ export function QuotaDialog({ metric, open, onOpenChange, onSaved }: QuotaDialog
       const res = await fetch("/api/quotas", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ metric: metric.metric, quota: quotaNum }),
+        body: JSON.stringify({
+          accountId: metric.accountId,
+          metric: metric.metric,
+          quota: quotaNum,
+        }),
       });
       const data = (await res.json()) as { ok: boolean; error?: string };
       if (!data.ok) {

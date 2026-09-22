@@ -28,6 +28,8 @@ interface CustomMetricDialogProps {
   onOpenChange: (open: boolean) => void;
   /** 编辑时传入已有指标 */
   editing: MetricStatus | null;
+  /** 新建时目标账号的 Cloudflare Account ID */
+  createAccountId: string | null;
   onSaved: () => Promise<void> | void;
 }
 
@@ -36,6 +38,7 @@ export function CustomMetricDialog({
   open,
   onOpenChange,
   editing,
+  createAccountId,
   onSaved,
 }: CustomMetricDialogProps) {
   const [name, setName] = useState("");
@@ -66,6 +69,10 @@ export function CustomMetricDialog({
   const handleSubmit = async () => {
     const quotaNum = Number(quota);
     const usedNum = Number(used);
+    if (!editing && !createAccountId) {
+      toast.error("请先选择要添加指标的账号");
+      return;
+    }
     if (!name.trim()) {
       toast.error("请填写指标名称");
       return;
@@ -88,6 +95,7 @@ export function CustomMetricDialog({
           period,
           quota: quotaNum,
           used: usedNum >= 0 ? usedNum : 0,
+          accountId: editing ? undefined : createAccountId,
         }),
       });
       const data = (await res.json()) as { ok: boolean; error?: string };

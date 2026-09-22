@@ -1,25 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { getAccount } from "@/lib/monitor/service";
 
 const VALID_PERIODS = ["day", "month", "total"];
 
 export async function POST(req: NextRequest) {
   try {
-    const account = await getAccount();
-    if (!account) {
-      return NextResponse.json(
-        { ok: false, error: "尚未配置账号" },
-        { status: 400 }
-      );
-    }
     const body = (await req.json()) as {
+      accountId?: string;
       name?: string;
       unit?: string;
       period?: string;
       quota?: number;
       used?: number;
     };
+    const accountId = body.accountId?.trim();
+    if (!accountId) {
+      return NextResponse.json(
+        { ok: false, error: "缺少账号标识" },
+        { status: 400 }
+      );
+    }
     const name = body.name?.trim();
     if (!name) {
       return NextResponse.json(
@@ -33,19 +33,20 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    const period = body.period && VALID_PERIODS.includes(body.period) ? body.period : "day";
+    const period =
+      body.period && VALID_PERIODS.includes(body.period) ? body.period : "day";
     const exists = await db.customMetric.findFirst({
-      where: { accountId: account.accountId, name },
+      where: { accountId, name },
     });
     if (exists) {
       return NextResponse.json(
-        { ok: false, error: "同名指标已存在" },
+        { ok: false, error: "该账号下已有同名指标" },
         { status: 400 }
       );
     }
     const created = await db.customMetric.create({
       data: {
-        accountId: account.accountId,
+        accountId,
         name,
         unit: body.unit?.trim() || "次",
         period,

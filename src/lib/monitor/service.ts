@@ -1,9 +1,10 @@
-// 监控服务层：配置管理、用量刷新、快照存储、状态组装、演示模式
+// 监控服务层：多账号配置、用量刷新、快照存储、状态组装、演示模式
 
 import { db } from "@/lib/db";
 import { METRIC_REGISTRY, getLevel } from "./metrics";
 import type {
-  ConfigInfo,
+  AccountGroup,
+  AccountInfo,
   MetricStatus,
   MonitorStatus,
 } from "./types";
@@ -16,7 +17,13 @@ import {
 } from "./cloudflare";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-export const DEMO_ACCOUNT_ID = "demo";
+
+/** 演示账号的 Cloudflare Account ID 集合 */
+export const DEMO_ACCOUNT_IDS = ["demo", "demo-b"];
+
+function isDemoAccountId(accountId: string): boolean {
+  return DEMO_ACCOUNT_IDS.includes(accountId);
+}
 
 // ---------------------------------------------------------------------------
 // 时间工具（Cloudflare 免费额度按 UTC 重置）
@@ -37,63 +44,85 @@ function utcMonthStart(d: Date): Date {
 }
 
 // ---------------------------------------------------------------------------
-// 账号配置
+// 账号管理（多账号）
 // ---------------------------------------------------------------------------
 
-export async function getAccount() {
-  return db.cfAccount.findFirst({ orderBy: { createdAt: "asc" } });
+export async function getAccounts() {
+  return db.cfAccount.findMany({ orderBy: { createdAt: "asc" } });
 }
 
-export async function getConfigInfo(): Promise<ConfigInfo> {
-  const account = await getAccount();
-  if (!account) return { configured: false, demo: false };
-  return {
-    configured: true,
-    demo: account.accountId === DEMO_ACCOUNT_ID,
-    name: account.name,
-    accountId: account.accountId,
-    hasToken: account.apiToken.length > 0,
-  };
+function toAccountInfo(a: {
+  id: string;
+  name: string;
+  accountId: string;
+}): AccountInfo {
+  return { id: a.id, name: a.name, accountId: a.accountId, demo: isDemoAccountId(a.accountId) };
 }
 
-export async function saveConfig(input: {
+export async function listAccountInfos(): Promise<AccountInfo[]> {
+  return (await getAccounts()).map(toAccountInfo);
+}
+
+export async function addAccount(input: {
   name?: string;
   accountId: string;
   apiToken: string;
 }) {
-  const existing = await getAccount();
-  if (existing) {
-    // 换了账号则清理旧数据
-    if (existing.accountId !== input.accountId) {
-      await db.metricQuota.deleteMany({ where: { accountId: existing.accountId } });
-      await db.usageSnapshot.deleteMany({ where: { accountId: existing.accountId } });
-      await db.customMetric.deleteMany({ where: { accountId: existing.accountId } });
-      await db.cfAccount.delete({ where: { id: existing.id } });
-    } else {
-      await db.cfAccount.update({
-        where: { id: existing.id },
-        data: {
-          name: input.name?.trim() || "Cloudflare 账号",
-          apiToken: input.apiToken,
-        },
-      });
-      return;
-    }
+  const accountId = input.accountId.trim();
+  const dup = await db.cfAccount.findUnique({ where: { accountId } });
+  if (dup) {
+    return { ok: false as const, error: "该 Account ID 已存在，无需重复添加" };
   }
-  await db.cfAccount.create({
+  const account = await db.cfAccount.create({
     data: {
       name: input.name?.trim() || "Cloudflare 账号",
-      accountId: input.accountId,
-      apiToken: input.apiToken,
+      accountId,
+      apiToken: input.apiToken.trim(),
     },
   });
+  await ensureDefaultQuotas(accountId);
+  return { ok: true as const, account };
 }
 
-export async function clearConfig() {
-  await db.cfAccount.deleteMany({});
-  await db.metricQuota.deleteMany({});
-  await db.usageSnapshot.deleteMany({});
-  await db.customMetric.deleteMany({});
+export async function updateAccount(
+  id: string,
+  input: { name?: string; accountId?: string; apiToken?: string }
+) {
+  const account = await db.cfAccount.findUnique({ where: { id } });
+  if (!account) {
+    return { ok: false as const, error: "账号不存在" };
+  }
+  const newCfId = input.accountId?.trim();
+  if (newCfId && newCfId !== account.accountId) {
+    const dup = await db.cfAccount.findUnique({ where: { accountId: newCfId } });
+    if (dup) {
+      return { ok: false as const, error: "该 Account ID 已被其他账号使用" };
+    }
+    // Cloudflare Account ID 变化，旧数据全部清理
+    await db.metricQuota.deleteMany({ where: { accountId: account.accountId } });
+    await db.usageSnapshot.deleteMany({ where: { accountId: account.accountId } });
+    await db.customMetric.deleteMany({ where: { accountId: account.accountId } });
+  }
+  await db.cfAccount.update({
+    where: { id },
+    data: {
+      name: input.name?.trim() || account.name,
+      accountId: newCfId || account.accountId,
+      // Token 留空表示保持不变
+      apiToken: input.apiToken?.trim() || account.apiToken,
+    },
+  });
+  if (newCfId) await ensureDefaultQuotas(newCfId);
+  return { ok: true as const };
+}
+
+export async function deleteAccount(id: string) {
+  const account = await db.cfAccount.findUnique({ where: { id } });
+  if (!account) return;
+  await db.metricQuota.deleteMany({ where: { accountId: account.accountId } });
+  await db.usageSnapshot.deleteMany({ where: { accountId: account.accountId } });
+  await db.customMetric.deleteMany({ where: { accountId: account.accountId } });
+  await db.cfAccount.delete({ where: { id } });
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +144,7 @@ async function ensureDefaultQuotas(accountId: string) {
   }
 }
 
-export async function getQuotaMap(accountId: string): Promise<Map<string, number>> {
+async function getQuotaMap(accountId: string): Promise<Map<string, number>> {
   await ensureDefaultQuotas(accountId);
   const rows = await db.metricQuota.findMany({ where: { accountId } });
   const map = new Map<string, number>();
@@ -124,7 +153,11 @@ export async function getQuotaMap(accountId: string): Promise<Map<string, number
   return map;
 }
 
-export async function setQuota(accountId: string, metric: string, quota: number) {
+export async function setQuota(
+  accountId: string,
+  metric: string,
+  quota: number
+) {
   const existing = await db.metricQuota.findFirst({
     where: { accountId, metric },
   });
@@ -138,8 +171,6 @@ export async function setQuota(accountId: string, metric: string, quota: number)
 // ---------------------------------------------------------------------------
 // 快照
 // ---------------------------------------------------------------------------
-
-type MetricValues = Record<string, number | null>;
 
 async function saveDailySnapshot(
   accountId: string,
@@ -168,22 +199,25 @@ async function saveDailySnapshot(
   }
 }
 
-async function savePointSnapshot(accountId: string, metric: string, used: number) {
+async function savePointSnapshot(
+  accountId: string,
+  metric: string,
+  used: number
+) {
   await db.usageSnapshot.create({
     data: { accountId, metric, used, capturedAt: new Date() },
   });
 }
 
 // ---------------------------------------------------------------------------
-// 真实账号刷新
+// 真实账号用量采集
 // ---------------------------------------------------------------------------
 
-export async function refreshRealAccount(
+async function refreshRealAccount(
   accountId: string,
   apiToken: string
-): Promise<{ values: MetricValues; errors: string[] }> {
+): Promise<{ errors: string[] }> {
   const errors: string[] = [];
-  const values: MetricValues = {};
   const now = new Date();
   const weekStart = new Date(utcDayStart(now).getTime() - 6 * DAY_MS);
 
@@ -209,7 +243,6 @@ export async function refreshRealAccount(
         (workersByDate.get(row.dimensions.date) ?? 0) + (row.sum?.requests ?? 0)
       );
     }
-    values.workers_requests = workersByDate.get(isoDate(now)) ?? 0;
 
     // D1 行读取/写入（按日）
     const d1ReadByDate = new Map<string, number>();
@@ -226,25 +259,19 @@ export async function refreshRealAccount(
         (d1WrittenByDate.get(row.dimensions.date) ?? 0) + s.rowsWritten
       );
     }
-    values.d1_rows_read = d1ReadByDate.get(isoDate(now)) ?? 0;
-    values.d1_rows_written = d1WrittenByDate.get(isoDate(now)) ?? 0;
 
     // R2 存储（取最近一天）
     const r2StorageRows = acc.r2StorageAdaptiveGroups ?? [];
-    if (r2StorageRows.length > 0) {
-      const latest = r2StorageRows[0];
-      const bytes =
-        (latest.max?.payloadSize ?? 0) + (latest.max?.metadataSize ?? 0);
-      values.r2_storage = bytes / 1024 ** 3;
-    } else {
-      values.r2_storage = 0;
-    }
+    const r2StorageBytes =
+      r2StorageRows.length > 0
+        ? (r2StorageRows[0].max?.payloadSize ?? 0) +
+          (r2StorageRows[0].max?.metadataSize ?? 0)
+        : 0;
 
     // 近 7 日 R2 操作（分类 A/B，按日）
-    const r2Ops7d = acc.r2OperationsAdaptiveGroups ?? [];
     const classA7d = new Map<string, number>();
     const classB7d = new Map<string, number>();
-    for (const row of r2Ops7d) {
+    for (const row of acc.r2OperationsAdaptiveGroups ?? []) {
       const cls = classifyR2Action(row.dimensions.actionType);
       if (!cls || !row.dimensions.date) continue;
       const target = cls === "A" ? classA7d : classB7d;
@@ -271,21 +298,11 @@ export async function refreshRealAccount(
       if (cls === "A") monthA += row.sum?.requests ?? 0;
       else monthB += row.sum?.requests ?? 0;
     }
-    // 本月数据不足时（月初 7 天覆盖），合并 7 日明细
-    const monthStartDate = isoDate(utcMonthStart(now));
-    if (isoDate(weekStart) <= monthStartDate) {
-      // 7 日窗口已覆盖月初，用 7 日明细的今日值即可，不重复累计
-    }
-    values.r2_class_a = monthA;
-    values.r2_class_b = monthB;
 
     // D1 存储总量（REST）
     const d1Bytes = await getD1StorageBytes(apiToken, accountId);
     if (d1Bytes === null) {
       errors.push("D1 存储用量获取失败（缺少 D1:Read 权限或账号无 D1）");
-      values.d1_storage = null;
-    } else {
-      values.d1_storage = d1Bytes / 1024 ** 3;
     }
 
     // ---- 写入快照 ----
@@ -305,7 +322,6 @@ export async function refreshRealAccount(
         if (v !== undefined) await saveDailySnapshot(accountId, metric, v, day);
       }
     }
-    // R2 每日操作也回填（用于趋势展示）
     for (const [metric, map] of [
       ["r2_class_a", classA7d],
       ["r2_class_b", classB7d],
@@ -316,11 +332,11 @@ export async function refreshRealAccount(
     }
 
     // 月度 / 总量指标：每次刷新记一个点
-    await savePointSnapshot(accountId, "r2_class_a", values.r2_class_a ?? 0);
-    await savePointSnapshot(accountId, "r2_class_b", values.r2_class_b ?? 0);
-    await savePointSnapshot(accountId, "r2_storage", values.r2_storage ?? 0);
-    if (values.d1_storage !== null) {
-      await savePointSnapshot(accountId, "d1_storage", values.d1_storage);
+    await savePointSnapshot(accountId, "r2_class_a", monthA);
+    await savePointSnapshot(accountId, "r2_class_b", monthB);
+    await savePointSnapshot(accountId, "r2_storage", r2StorageBytes / 1024 ** 3);
+    if (d1Bytes !== null) {
+      await savePointSnapshot(accountId, "d1_storage", d1Bytes / 1024 ** 3);
     }
   } catch (err) {
     const msg =
@@ -332,53 +348,113 @@ export async function refreshRealAccount(
     errors.push(`用量采集失败：${msg}`);
   }
 
-  return { values, errors };
+  return { errors };
 }
 
 // ---------------------------------------------------------------------------
-// 演示模式
+// 演示模式（双演示账号）
 // ---------------------------------------------------------------------------
 
-const DEMO_BASE: Record<string, number> = {
-  workers_requests: 61_500,
-  r2_class_a: 352_000,
-  r2_class_b: 4_210_000,
-  r2_storage: 4.6,
-  d1_rows_read: 1_860_000,
-  d1_rows_written: 88_300,
-  d1_storage: 1.2,
-};
+interface DemoSpec {
+  accountId: string;
+  name: string;
+  base: {
+    workers_requests: number;
+    r2_class_a: number;
+    r2_class_b: number;
+    r2_storage: number;
+    d1_rows_read: number;
+    d1_rows_written: number;
+    d1_storage: number;
+  };
+  customs: {
+    name: string;
+    unit: string;
+    period: string;
+    quota: number;
+    used: number;
+  }[];
+}
 
-export async function seedDemo() {
-  await clearConfig();
-  await db.cfAccount.create({
-    data: {
-      name: "演示账号（模拟数据）",
-      accountId: DEMO_ACCOUNT_ID,
-      apiToken: "demo-token",
+const DEMO_SPECS: DemoSpec[] = [
+  {
+    accountId: "demo",
+    name: "演示账号 A（模拟数据）",
+    base: {
+      workers_requests: 61_500,
+      r2_class_a: 352_000,
+      r2_class_b: 4_210_000,
+      r2_storage: 4.6,
+      d1_rows_read: 1_860_000,
+      d1_rows_written: 88_300,
+      d1_storage: 1.2,
     },
+    customs: [
+      { name: "KV 读取次数", unit: "次", period: "day", quota: 100_000, used: 52_400 },
+      { name: "KV 写入次数", unit: "次", period: "day", quota: 1_000, used: 942 },
+      { name: "Pages 构建次数", unit: "次", period: "month", quota: 500, used: 468 },
+    ],
+  },
+  {
+    accountId: "demo-b",
+    name: "演示账号 B（模拟数据）",
+    base: {
+      workers_requests: 24_800,
+      r2_class_a: 88_400,
+      r2_class_b: 1_650_000,
+      r2_storage: 1.3,
+      d1_rows_read: 640_000,
+      d1_rows_written: 21_500,
+      d1_storage: 0.4,
+    },
+    customs: [
+      { name: "KV 读取次数", unit: "次", period: "day", quota: 100_000, used: 31_200 },
+      { name: "Pages 构建次数", unit: "次", period: "month", quota: 500, used: 128 },
+    ],
+  },
+];
+
+async function seedOneDemo(spec: DemoSpec) {
+  const existing = await db.cfAccount.findUnique({
+    where: { accountId: spec.accountId },
   });
-  await ensureDefaultQuotas(DEMO_ACCOUNT_ID);
+  if (!existing) {
+    await db.cfAccount.create({
+      data: {
+        name: spec.name,
+        accountId: spec.accountId,
+        apiToken: "demo-token",
+      },
+    });
+  }
+  // 重置该演示账号的数据
+  await db.usageSnapshot.deleteMany({ where: { accountId: spec.accountId } });
+  await db.customMetric.deleteMany({ where: { accountId: spec.accountId } });
+  await ensureDefaultQuotas(spec.accountId);
 
   const now = new Date();
   const today = utcDayStart(now);
 
-  // 近 7 日每日指标历史（含今日）
-  const dailyHistory: Record<string, (dayOffset: number) => number> = {
-    workers_requests: (i) => Math.round(42_000 + Math.random() * 30_000),
-    d1_rows_read: (i) => Math.round(1_200_000 + Math.random() * 900_000),
-    d1_rows_written: (i) => Math.round(45_000 + Math.random() * 50_000),
-    r2_class_a: () => Math.round(280_000 + Math.random() * 90_000),
-    r2_class_b: () => Math.round(3_600_000 + Math.random() * 800_000),
-  };
+  // 近 7 日每日指标历史（不含今日）
+  const dailyBase: [string, number][] = [
+    ["workers_requests", spec.base.workers_requests],
+    ["d1_rows_read", spec.base.d1_rows_read],
+    ["d1_rows_written", spec.base.d1_rows_written],
+    ["r2_class_a", spec.base.r2_class_a],
+    ["r2_class_b", spec.base.r2_class_b],
+  ];
   for (let i = 6; i >= 1; i--) {
     const day = new Date(today.getTime() - i * DAY_MS);
-    for (const [metric, gen] of Object.entries(dailyHistory)) {
+    for (const [metric, baseV] of dailyBase) {
+      const factor =
+        metric.startsWith("r2") || metric === "d1_rows_written"
+          ? 0.72 + Math.random() * 0.22
+          : 0.6 + Math.random() * 0.35;
       await db.usageSnapshot.create({
         data: {
-          accountId: DEMO_ACCOUNT_ID,
+          accountId: spec.accountId,
           metric,
-          used: gen(i),
+          used: Math.round(baseV * factor),
           capturedAt: day,
         },
       });
@@ -386,50 +462,33 @@ export async function seedDemo() {
   }
 
   // 今日快照
-  const todayValues: MetricValues = { ...DEMO_BASE };
-  for (const [metric, used] of Object.entries(todayValues)) {
-    await saveDailySnapshot(DEMO_ACCOUNT_ID, metric, used, now);
+  for (const [metric, v] of dailyBase) {
+    await saveDailySnapshot(spec.accountId, metric, v, now);
   }
-  await savePointSnapshot(DEMO_ACCOUNT_ID, "r2_storage", DEMO_BASE.r2_storage);
-  await savePointSnapshot(DEMO_ACCOUNT_ID, "d1_storage", DEMO_BASE.d1_storage);
+  await savePointSnapshot(spec.accountId, "r2_storage", spec.base.r2_storage);
+  await savePointSnapshot(spec.accountId, "d1_storage", spec.base.d1_storage);
 
-  // 自定义指标（API 无法自动获取的资源）
-  await db.customMetric.createMany({
-    data: [
-      {
-        accountId: DEMO_ACCOUNT_ID,
-        name: "KV 读取次数",
-        unit: "次",
-        period: "day",
-        quota: 100_000,
-        used: 52_400,
-      },
-      {
-        accountId: DEMO_ACCOUNT_ID,
-        name: "KV 写入次数",
-        unit: "次",
-        period: "day",
-        quota: 1_000,
-        used: 942,
-      },
-      {
-        accountId: DEMO_ACCOUNT_ID,
-        name: "Pages 构建次数",
-        unit: "次",
-        period: "month",
-        quota: 500,
-        used: 468,
-      },
-    ],
-  });
+  // 自定义指标
+  if (spec.customs.length > 0) {
+    await db.customMetric.createMany({
+      data: spec.customs.map((c) => ({ ...c, accountId: spec.accountId })),
+    });
+  }
 }
 
-export async function refreshDemo(): Promise<{ errors: string[] }> {
-  const now = new Date();
-  const latest = await latestSnapshotMap(DEMO_ACCOUNT_ID);
-  const errors: string[] = [];
+/** 添加 / 重置演示账号（不影响已配置的真实账号） */
+export async function seedDemo() {
+  for (const spec of DEMO_SPECS) {
+    await seedOneDemo(spec);
+  }
+}
 
-  const quotaMap = await getQuotaMap(DEMO_ACCOUNT_ID);
+async function refreshDemo(accountId: string): Promise<{ errors: string[] }> {
+  const errors: string[] = [];
+  const now = new Date();
+  const latest = await latestSnapshotMap(accountId);
+  const quotaMap = await getQuotaMap(accountId);
+
   const walk = (metric: string, minPct: number, maxPct: number) => {
     const quota = quotaMap.get(metric) ?? 1;
     const base = latest.get(metric)?.used ?? quota * 0.3;
@@ -441,40 +500,38 @@ export async function refreshDemo(): Promise<{ errors: string[] }> {
   };
 
   await saveDailySnapshot(
-    DEMO_ACCOUNT_ID,
+    accountId,
     "workers_requests",
     Math.round(walk("workers_requests", 0.5, 3)),
     now
   );
   await saveDailySnapshot(
-    DEMO_ACCOUNT_ID,
+    accountId,
     "d1_rows_read",
     Math.round(walk("d1_rows_read", 0.5, 4)),
     now
   );
   await saveDailySnapshot(
-    DEMO_ACCOUNT_ID,
+    accountId,
     "d1_rows_written",
     Math.round(walk("d1_rows_written", 0.3, 2)),
     now
   );
   await savePointSnapshot(
-    DEMO_ACCOUNT_ID,
+    accountId,
     "r2_class_a",
     Math.round(walk("r2_class_a", 0.2, 1.5))
   );
   await savePointSnapshot(
-    DEMO_ACCOUNT_ID,
+    accountId,
     "r2_class_b",
     Math.round(walk("r2_class_b", 0.2, 1.5))
   );
-  await savePointSnapshot(DEMO_ACCOUNT_ID, "r2_storage", walk("r2_storage", -1, 1));
-  await savePointSnapshot(DEMO_ACCOUNT_ID, "d1_storage", walk("d1_storage", -0.5, 0.5));
+  await savePointSnapshot(accountId, "r2_storage", walk("r2_storage", -1, 1));
+  await savePointSnapshot(accountId, "d1_storage", walk("d1_storage", -0.5, 0.5));
 
   // 自定义指标同步增长
-  const customs = await db.customMetric.findMany({
-    where: { accountId: DEMO_ACCOUNT_ID },
-  });
+  const customs = await db.customMetric.findMany({ where: { accountId } });
   for (const c of customs) {
     await db.customMetric.update({
       where: { id: c.id },
@@ -490,25 +547,59 @@ export async function refreshDemo(): Promise<{ errors: string[] }> {
   return { errors };
 }
 
+/** 移除全部演示账号（不影响真实账号） */
 export async function exitDemo() {
-  await clearConfig();
+  const demos = await db.cfAccount.findMany({
+    where: { accountId: { in: DEMO_ACCOUNT_IDS } },
+  });
+  for (const d of demos) {
+    await deleteAccount(d.id);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 刷新入口
+// ---------------------------------------------------------------------------
+
+/** 刷新指定账号（ids 非空）或全部账号 */
+export async function refreshAccounts(
+  ids?: string[]
+): Promise<{ errors: string[]; refreshed: number }> {
+  const accounts = await getAccounts();
+  const targets =
+    ids && ids.length > 0
+      ? accounts.filter((a) => ids.includes(a.id))
+      : accounts;
+  const errors: string[] = [];
+
+  for (const account of targets) {
+    let accountErrors: string[];
+    if (isDemoAccountId(account.accountId)) {
+      ({ errors: accountErrors } = await refreshDemo(account.accountId));
+    } else {
+      ({ errors: accountErrors } = await refreshRealAccount(
+        account.accountId,
+        account.apiToken
+      ));
+    }
+    for (const e of accountErrors) {
+      errors.push(`[${account.name}] ${e}`);
+    }
+  }
+
+  return { errors, refreshed: targets.length };
 }
 
 // ---------------------------------------------------------------------------
 // 状态组装
 // ---------------------------------------------------------------------------
 
-async function latestSnapshotMap(accountId: string): Promise<Map<string, { used: number; capturedAt: Date }>> {
+async function latestSnapshotMap(
+  accountId: string
+): Promise<Map<string, { used: number; capturedAt: Date }>> {
   const metrics = new Set(METRIC_REGISTRY.map((m) => m.id));
-  const customs = await db.customMetric.findMany({
-    where: { accountId },
-    select: { name: true },
-  });
-  for (const c of customs) metrics.add(`custom:${c.name}`);
-
   const map = new Map<string, { used: number; capturedAt: Date }>();
   for (const metric of metrics) {
-    if (metric.startsWith("custom:")) continue; // 自定义指标实时读取
     const snap = await db.usageSnapshot.findFirst({
       where: { accountId, metric },
       orderBy: { capturedAt: "desc" },
@@ -533,24 +624,17 @@ async function historyFor(
   return Array.from(byDate.entries()).map(([date, used]) => ({ date, used }));
 }
 
-export async function getStatus(errors: string[] = []): Promise<MonitorStatus> {
-  const config = await getConfigInfo();
-  if (!config.configured) {
-    return {
-      config,
-      lastRefreshAt: null,
-      metrics: [],
-      summary: { total: 0, ok: 0, warning: 0, danger: 0, over: 0, nodata: 0 },
-      errors,
-    };
-  }
-  const accountId = config.accountId!;
+async function buildGroup(account: {
+  id: string;
+  name: string;
+  accountId: string;
+}): Promise<AccountGroup> {
+  const accountId = account.accountId;
   const quotaMap = await getQuotaMap(accountId);
   const latest = await latestSnapshotMap(accountId);
 
   const metrics: MetricStatus[] = [];
 
-  // 内置指标
   for (const def of METRIC_REGISTRY) {
     const used = latest.get(def.id)?.used ?? null;
     const quota = quotaMap.get(def.id) ?? def.defaultQuota;
@@ -569,10 +653,12 @@ export async function getStatus(errors: string[] = []): Promise<MonitorStatus> {
       level: getLevel(percent),
       custom: false,
       history: await historyFor(accountId, def.id),
+      accountDbId: account.id,
+      accountId,
+      accountName: account.name,
     });
   }
 
-  // 自定义指标
   const customs = await db.customMetric.findMany({
     where: { accountId },
     orderBy: { createdAt: "asc" },
@@ -594,17 +680,11 @@ export async function getStatus(errors: string[] = []): Promise<MonitorStatus> {
       custom: true,
       customId: c.id,
       history: [],
+      accountDbId: account.id,
+      accountId,
+      accountName: account.name,
     });
   }
-
-  const summary = {
-    total: metrics.length,
-    ok: metrics.filter((m) => m.level === "ok").length,
-    warning: metrics.filter((m) => m.level === "warning").length,
-    danger: metrics.filter((m) => m.level === "danger").length,
-    over: metrics.filter((m) => m.level === "over").length,
-    nodata: metrics.filter((m) => m.level === "nodata").length,
-  };
 
   const lastRefreshAt =
     latest.size > 0
@@ -614,5 +694,51 @@ export async function getStatus(errors: string[] = []): Promise<MonitorStatus> {
           .toISOString()
       : null;
 
-  return { config, lastRefreshAt, metrics, summary, errors };
+  return {
+    id: account.id,
+    name: account.name,
+    accountId,
+    demo: isDemoAccountId(accountId),
+    lastRefreshAt,
+    metrics,
+    builtin: metrics.filter((m) => !m.custom),
+    custom: metrics.filter((m) => m.custom),
+  };
+}
+
+export async function getStatus(view = "all"): Promise<MonitorStatus> {
+  const accountList = await listAccountInfos();
+  const groups: AccountGroup[] = [];
+
+  for (const account of await getAccounts()) {
+    if (view !== "all" && account.id !== view) continue;
+    groups.push(await buildGroup(account));
+  }
+
+  const allMetrics = groups.flatMap((g) => g.metrics);
+  const summary = {
+    total: allMetrics.length,
+    ok: allMetrics.filter((m) => m.level === "ok").length,
+    warning: allMetrics.filter((m) => m.level === "warning").length,
+    danger: allMetrics.filter((m) => m.level === "danger").length,
+    over: allMetrics.filter((m) => m.level === "over").length,
+    nodata: allMetrics.filter((m) => m.level === "nodata").length,
+  };
+
+  const lastRefreshAt =
+    groups
+      .map((g) => g.lastRefreshAt)
+      .filter((t): t is string => t !== null)
+      .sort()
+      .pop() ?? null;
+
+  return {
+    view,
+    accounts: groups,
+    accountList,
+    accountCount: accountList.length,
+    lastRefreshAt,
+    summary,
+    errors: [],
+  };
 }

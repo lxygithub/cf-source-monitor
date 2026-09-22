@@ -18,7 +18,7 @@ const STEPS = [
   {
     icon: MousePointerClick,
     title: "填入并保存",
-    desc: "点击右上角「设置」填入信息，保存后即可自动采集用量并生成趋势快照",
+    desc: "点击右上角「账号」添加，支持多个 Cloudflare 账号分别监控",
   },
 ];
 
@@ -26,19 +26,20 @@ const FEATURES = [
   "Workers 请求量",
   "R2 存储与操作数",
   "D1 读写行数",
+  "多账号管理",
   "自定义指标",
   "阈值告警提醒",
   "近 7 日趋势",
 ];
 
 interface OnboardingProps {
-  onOpenSettings: () => void;
+  onOpenAccounts: () => void;
   onSeedDemo: () => Promise<void>;
   seeding: boolean;
 }
 
 /** 未配置账号时的引导页 */
-export function Onboarding({ onOpenSettings, onSeedDemo, seeding }: OnboardingProps) {
+export function Onboarding({ onOpenAccounts, onSeedDemo, seeding }: OnboardingProps) {
   return (
     <Card className="border-2 border-dashed border-orange-200 bg-gradient-to-b from-orange-50/60 to-transparent dark:border-orange-900/60 dark:from-orange-950/20">
       <CardContent className="flex flex-col items-center gap-8 px-6 py-12 text-center sm:py-16">
@@ -78,7 +79,7 @@ export function Onboarding({ onOpenSettings, onSeedDemo, seeding }: OnboardingPr
 
         <div className="flex flex-col gap-3 sm:flex-row">
           <Button
-            onClick={onOpenSettings}
+            onClick={onOpenAccounts}
             size="lg"
             className="bg-orange-500 text-white hover:bg-orange-600"
           >
