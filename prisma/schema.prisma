@@ -1,0 +1,53 @@
+// Cloudflare 资源余量监控 - 数据模型
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Cloudflare 账号配置（Account ID + API Token）
+model CfAccount {
+  id        String   @id @default(cuid())
+  name      String   @default("Cloudflare 账号")
+  accountId String   @unique
+  apiToken  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// 各指标的配额上限（可自定义，默认取 Free 套餐额度）
+model MetricQuota {
+  id        String @id @default(cuid())
+  accountId String
+  metric    String
+  quota     Float
+  @@unique([accountId, metric])
+}
+
+// 用量快照（用于趋势图 / 历史记录）
+model UsageSnapshot {
+  id         String   @id @default(cuid())
+  accountId  String
+  metric     String
+  used       Float
+  capturedAt DateTime @default(now())
+  @@index([accountId, metric, capturedAt])
+}
+
+// 自定义监控指标（用于 API 无法自动获取的资源，如 KV 操作数）
+model CustomMetric {
+  id        String   @id @default(cuid())
+  accountId String
+  name      String
+  unit      String   @default("次")
+  period    String   @default("day") // day | month | total
+  quota     Float
+  used      Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([accountId, name])
+}
