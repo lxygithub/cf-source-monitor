@@ -17,23 +17,58 @@ function authHeaders(token: string): HeadersInit {
   };
 }
 
-/** 校验 Token 有效性（/user/tokens/verify） */
-export async function verifyToken(token: string) {
-  const res = await fetch(`${CF_BASE}/user/tokens/verify`, {
+interface TokenVerifyResponse {
+  success: boolean;
+  errors: { code: number; message: string }[];
+  result?: { status: string };
+}
+
+async function fetchTokenVerify(url: string, token: string) {
+  const res = await fetch(url, {
     headers: authHeaders(token),
     cache: "no-store",
   });
-  const json = (await res.json()) as {
-    success: boolean;
-    errors: { code: number; message: string }[];
-    result?: { status: string };
-  };
-  if (!json.success) {
+  return (await res.json()) as TokenVerifyResponse;
+}
+
+/**
+ * 校验 Token 有效性。
+ *
+ * Cloudflare 有两类 Token，校验端点不同：
+ * - user-owned：`/user/tokens/verify`
+ * - account-owned（`cfat_` 前缀）：`/user/tokens/verify` 固定返回 401
+ *   `Invalid API Token`，必须用 `/accounts/{account_id}/tokens/verify`
+ *
+ * 先试 user 端点，失败且有 Account ID 时回落到账号级端点。
+ */
+export async function verifyToken(token: string, accountId?: string) {
+  const userJson = await fetchTokenVerify(
+    `${CF_BASE}/user/tokens/verify`,
+    token
+  );
+  if (userJson.success) {
+    return userJson.result?.status === "active";
+  }
+
+  if (accountId) {
+    const accountJson = await fetchTokenVerify(
+      `${CF_BASE}/accounts/${accountId}/tokens/verify`,
+      token
+    );
+    if (accountJson.success) {
+      return accountJson.result?.status === "active";
+    }
     throw new CloudflareApiError(
-      json.errors?.[0]?.message || "Token 校验失败"
+      accountJson.errors?.[0]?.message || "Token 校验失败"
     );
   }
-  return json.result?.status === "active";
+
+  const message = userJson.errors?.[0]?.message || "Token 校验失败";
+  throw new CloudflareApiError(
+    token.startsWith("cfat_")
+      ? `${message}（这是 Account 级 Token，请同时填写 Account ID）`
+      : message
+  );
 }
 
 /** 校验 Token 是否能访问指定账号 */

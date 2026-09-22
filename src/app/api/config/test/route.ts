@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     }
 
     try {
-      await verifyToken(apiToken);
+      await verifyToken(apiToken, accountId);
     } catch (err) {
       const msg =
         err instanceof CloudflareApiError
