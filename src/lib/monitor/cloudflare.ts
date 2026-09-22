@@ -198,7 +198,7 @@ export function queryUsageTrend(
       viewer {
         accounts(filter: { accountTag: $accountTag }) {
           workersInvocationsAdaptive(
-            limit: 100000
+            limit: 10000
             filter: { datetime_geq: $datetimeFrom, datetime_leq: $datetimeTo }
             orderBy: [date_ASC]
           ) {
