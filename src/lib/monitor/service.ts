@@ -339,6 +339,37 @@ async function savePointSnapshot(
   });
 }
 
+/**
+ * 写入一组「按日」数据。
+ * 分析数据集通常滞后数小时，今天可能还没有行；此时用最近可用的一天
+ * 填充今日快照，避免面板停留在过期值上。
+ */
+async function saveDailySeries(
+  accountId: string,
+  metric: string,
+  byDate: Map<string, number>,
+  now: Date
+) {
+  for (const [date, value] of byDate) {
+    await saveDailySnapshot(
+      accountId,
+      metric,
+      value,
+      new Date(`${date}T00:00:00Z`)
+    );
+  }
+  const todayKey = isoDate(now);
+  if (byDate.size > 0 && !byDate.has(todayKey)) {
+    const latestKey = [...byDate.keys()].sort().at(-1) as string;
+    await saveDailySnapshot(
+      accountId,
+      metric,
+      byDate.get(latestKey) ?? 0,
+      now
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 真实账号用量采集
 // ---------------------------------------------------------------------------
@@ -585,14 +616,7 @@ async function refreshRealAccount(
         ["hyperdrive_queries", hyperdriveByDate],
       ] as [string, Map<string, number>][];
       for (const [metric, map] of dailyExtra) {
-        for (const [date, v] of map) {
-          await saveDailySnapshot(
-            accountId,
-            metric,
-            v,
-            new Date(`${date}T00:00:00Z`)
-          );
-        }
+        await saveDailySeries(accountId, metric, map, now);
       }
 
       // 月度累计指标
@@ -700,14 +724,7 @@ async function refreshRealAccount(
       for (const [key, map] of kvNsMaps) {
         const [action, nsId] = key.split(SPLIT_SEP);
         const metricId = splitMetricId(kvActionToMetric[action], "ns", nsId);
-        for (const [date, v] of map) {
-          await saveDailySnapshot(
-            accountId,
-            metricId,
-            v,
-            new Date(`${date}T00:00:00Z`)
-          );
-        }
+        await saveDailySeries(accountId, metricId, map, now);
       }
 
       // ---- 拆分视图：D1 按数据库 ----
@@ -725,26 +742,20 @@ async function refreshRealAccount(
         d1WrittenByDb.set(dbId, writtenMap);
       }
       for (const [dbId, map] of d1ReadByDb) {
-        const metricId = splitMetricId("d1_rows_read", "db", dbId);
-        for (const [date, v] of map) {
-          await saveDailySnapshot(
-            accountId,
-            metricId,
-            v,
-            new Date(`${date}T00:00:00Z`)
-          );
-        }
+        await saveDailySeries(
+          accountId,
+          splitMetricId("d1_rows_read", "db", dbId),
+          map,
+          now
+        );
       }
       for (const [dbId, map] of d1WrittenByDb) {
-        const metricId = splitMetricId("d1_rows_written", "db", dbId);
-        for (const [date, v] of map) {
-          await saveDailySnapshot(
-            accountId,
-            metricId,
-            v,
-            new Date(`${date}T00:00:00Z`)
-          );
-        }
+        await saveDailySeries(
+          accountId,
+          splitMetricId("d1_rows_written", "db", dbId),
+          map,
+          now
+        );
       }
 
       const d1StorageRows = extended.d1Storage ?? [];
@@ -791,23 +802,26 @@ async function refreshRealAccount(
         pagesByProject.set(projectId, byDate);
       }
       for (const [projectId, byDate] of pagesByProject) {
+        const requests = new Map<string, number>();
+        const errorRates = new Map<string, number>();
         for (const [date, value] of byDate) {
-          const day = new Date(`${date}T00:00:00Z`);
-          await saveDailySnapshot(
-            accountId,
-            splitMetricId("pages_functions_requests", "pj", projectId),
-            value.requests,
-            day
-          );
+          requests.set(date, value.requests);
           if (value.requests > 0) {
-            await saveDailySnapshot(
-              accountId,
-              splitMetricId("pages_functions_error_rate", "pj", projectId),
-              (value.errors / value.requests) * 100,
-              day
-            );
+            errorRates.set(date, (value.errors / value.requests) * 100);
           }
         }
+        await saveDailySeries(
+          accountId,
+          splitMetricId("pages_functions_requests", "pj", projectId),
+          requests,
+          now
+        );
+        await saveDailySeries(
+          accountId,
+          splitMetricId("pages_functions_error_rate", "pj", projectId),
+          errorRates,
+          now
+        );
       }
     }
 
