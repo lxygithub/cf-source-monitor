@@ -134,14 +134,21 @@ const SPLIT_SHORT_LABEL: Record<string, string> = {
   pages_functions_error_rate: "Pages 错误率",
 };
 
-/** 从快照中找出拆分视图指标，生成展示用定义 */
-async function dynamicMetricDefs(accountId: string): Promise<MetricDef[]> {
+/** 从快照中找出拆分视图指标：生成展示用定义 + 资源信息 */
+async function dynamicMetricDefs(accountId: string): Promise<{
+  defs: MetricDef[];
+  resources: Map<string, { id: string; name: string; metricLabel: string }>;
+}> {
   const rows = await db.usageSnapshot.findMany({
     where: { accountId },
     distinct: ["metric"],
     select: { metric: true },
   });
-  const defs: MetricDef[] = [];
+  const collected: { def: MetricDef; sortKey: string }[] = [];
+  const resources = new Map<
+    string,
+    { id: string; name: string; metricLabel: string }
+  >();
   for (const row of rows) {
     const parsed = parseSplitMetricId(row.metric);
     if (!parsed) continue;
@@ -155,18 +162,28 @@ async function dynamicMetricDefs(accountId: string): Promise<MetricDef[]> {
         : name === parsed.id
           ? `${parsed.id.slice(0, 8)}…`
           : name;
-    defs.push({
-      ...base,
-      id: row.metric,
-      // 资源名放前面：卡片标题窄，截断时优先保留名字
-      label: `${display} · ${SPLIT_SHORT_LABEL[base.id] ?? base.label}`,
-      description: `${base.description}（拆分视图：${splitScopeLabel(
-        parsed.scope
-      )} ${display}）`,
+    const metricLabel = SPLIT_SHORT_LABEL[base.id] ?? base.label;
+    collected.push({
+      def: {
+        ...base,
+        id: row.metric,
+        // 标题只放资源名，指标类型与 ID 放在卡片第二行
+        label: display,
+        description: `${base.description}（拆分视图：${splitScopeLabel(
+          parsed.scope
+        )} ${display}）`,
+      },
+      // 同一资源的多项指标排在一起
+      sortKey: `${parsed.scope}${SPLIT_SEP}${parsed.id}${SPLIT_SEP}${base.id}`,
+    });
+    resources.set(row.metric, {
+      id: parsed.id,
+      name: display,
+      metricLabel,
     });
   }
-  defs.sort((a, b) => a.id.localeCompare(b.id));
-  return defs;
+  collected.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  return { defs: collected.map((c) => c.def), resources };
 }
 
 /** 演示账号的 Cloudflare Account ID 集合 */
@@ -1173,7 +1190,8 @@ async function buildGroup(account: {
 }): Promise<AccountGroup> {
   const accountId = account.accountId;
   const quotaMap = await getQuotaMap(accountId);
-  const splitDefs = await dynamicMetricDefs(accountId);
+  const { defs: splitDefs, resources: splitResources } =
+    await dynamicMetricDefs(accountId);
   const latest = await latestSnapshotMap(
     accountId,
     splitDefs.map((d) => d.id)
@@ -1199,6 +1217,7 @@ async function buildGroup(account: {
       level: getLevel(percent),
       custom: false,
       history: await historyFor(accountId, def.id),
+      resource: splitResources.get(def.id),
       accountDbId: account.id,
       accountId,
       accountName: account.name,

@@ -72,6 +72,15 @@ export interface MetricStatus {
   customId?: string;
   /** 近 7 日趋势（按天去重，每天取最后一次快照） */
   history: { date: string; used: number }[];
+  /** 拆分视图资源信息（KV namespace / D1 库 / Pages 项目） */
+  resource?: {
+    /** 资源原始 ID（namespace id / 数据库 uuid / 项目数字 ID） */
+    id: string;
+    /** 资源显示名（取不到名称时为短 ID） */
+    name: string;
+    /** 指标短名，如 "Pages 错误率" */
+    metricLabel: string;
+  };
   /** 所属账号（本系统数据库记录 ID） */
   accountDbId: string;
   /** Cloudflare Account ID */

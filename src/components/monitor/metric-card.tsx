@@ -97,14 +97,24 @@ export function MetricCard({
             </span>
             <div className="min-w-0">
               <p
-                className="line-clamp-2 text-sm font-medium leading-tight"
+                className="truncate text-sm font-medium leading-tight"
                 title={status.label}
               >
                 {status.label}
               </p>
-              <p className="text-[11px] leading-tight text-muted-foreground">
-                {PERIOD_LABEL[status.period]}额度 · {status.unit}
-              </p>
+              {status.resource ? (
+                <p
+                  className="truncate text-[11px] leading-tight text-muted-foreground"
+                  title={`${status.resource.metricLabel} · ${status.resource.id}`}
+                >
+                  {status.resource.metricLabel} ·{" "}
+                  <span className="font-mono">{status.resource.id}</span>
+                </p>
+              ) : (
+                <p className="text-[11px] leading-tight text-muted-foreground">
+                  {PERIOD_LABEL[status.period]}额度 · {status.unit}
+                </p>
+              )}
             </div>
           </div>
 
