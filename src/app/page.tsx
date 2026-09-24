@@ -10,11 +10,16 @@ import { MonitorHeader } from "@/components/monitor/monitor-header";
 import { MonitorFooter } from "@/components/monitor/monitor-footer";
 import { Onboarding } from "@/components/monitor/onboarding";
 import { MetricCard } from "@/components/monitor/metric-card";
+import {
+  CATEGORY_ORDER,
+  categoryMeta,
+} from "@/components/monitor/metric-categories";
 import { TrendDialog } from "@/components/monitor/trend-dialog";
 import { AccountManagerDialog } from "@/components/monitor/account-manager-dialog";
 import { CustomMetricDialog } from "@/components/monitor/custom-metric-dialog";
 import { QuotaDialog } from "@/components/monitor/quota-dialog";
 import { formatTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import type { AccountGroup, MetricStatus, MonitorStatus } from "@/lib/monitor/types";
 
 const AUTO_REFRESH_MS = 60_000;
@@ -314,6 +319,28 @@ interface AccountSectionProps {
   onAddCustom: () => void;
 }
 
+/** 内置指标按分类分组，顺序固定；未列入 CATEGORY_ORDER 的分类排在后面 */
+function categorySections(
+  metrics: MetricStatus[]
+): [string, MetricStatus[]][] {
+  const grouped = new Map<string, MetricStatus[]>();
+  for (const m of metrics) {
+    const list = grouped.get(m.category);
+    if (list) list.push(m);
+    else grouped.set(m.category, [m]);
+  }
+  const ordered: [string, MetricStatus[]][] = [];
+  for (const key of CATEGORY_ORDER) {
+    const list = grouped.get(key);
+    if (list && list.length > 0) {
+      ordered.push([key, list]);
+      grouped.delete(key);
+    }
+  }
+  for (const [key, list] of grouped) ordered.push([key, list]);
+  return ordered;
+}
+
 function AccountSection({
   group,
   showHeader,
@@ -342,21 +369,58 @@ function AccountSection({
         </div>
       )}
 
-      {/* 自动采集指标 */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {group.builtin.map((m) => (
-          <MetricCard
-            key={m.metric}
-            status={m}
-            onEditQuota={onEditQuota}
-            onShowTrend={onShowTrend}
-          />
-        ))}
+      {/* 自动采集指标：按分类分组 */}
+      <div className="space-y-6">
+        {categorySections(group.builtin).map(([key, list]) => {
+          const meta = categoryMeta(key);
+          const SectionIcon = meta.icon;
+          const over = list.filter(
+            (m) => m.level === "danger" || m.level === "over"
+          ).length;
+          const warn = list.filter((m) => m.level === "warning").length;
+          return (
+            <div key={key} className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={cn("h-4 w-1 rounded-full", meta.bar)} />
+                <SectionIcon className="size-4 text-muted-foreground" />
+                <h3 className="text-sm font-medium">{meta.label}</h3>
+                <span className="text-xs text-muted-foreground">
+                  {list.length}
+                </span>
+                {over > 0 && (
+                  <Badge className="border-transparent bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-400">
+                    {over} 需处理
+                  </Badge>
+                )}
+                {over === 0 && warn > 0 && (
+                  <Badge className="border-transparent bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400">
+                    {warn} 接近限额
+                  </Badge>
+                )}
+                <span className="ml-auto hidden text-xs text-muted-foreground sm:block">
+                  {meta.hint}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {list.map((m) => (
+                  <MetricCard
+                    key={m.metric}
+                    status={m}
+                    onEditQuota={onEditQuota}
+                    onShowTrend={onShowTrend}
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {/* 自定义指标 */}
       <div className="flex items-center justify-between pt-1">
-        <h3 className="text-xs text-muted-foreground">自定义指标（手动记录）</h3>
+        <h3 className="text-xs text-muted-foreground">
+          {categoryMeta("custom").label}（手动记录）
+        </h3>
         <Button
           variant="outline"
           size="sm"

@@ -19,7 +19,7 @@ export const metadata: Metadata = {
     "监控 Cloudflare Workers、R2、D1 等免费资源配额使用情况，接近限额自动告警提醒。",
   keywords: ["Cloudflare", "Workers", "R2", "D1", "资源监控", "配额", "余量"],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "/icon.svg",
   },
 };
 

@@ -2,8 +2,8 @@
 
 import {
   ResponsiveContainer,
-  BarChart,
-  Bar,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -54,7 +54,10 @@ export function TrendDialog({ metric, open, onOpenChange }: TrendDialogProps) {
         ) : (
           <div className="h-56 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <LineChart
+                data={data}
+                margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
+              >
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
                 <XAxis
                   dataKey="label"
@@ -68,11 +71,12 @@ export function TrendDialog({ metric, open, onOpenChange }: TrendDialogProps) {
                   tickLine={false}
                   axisLine={false}
                   width={56}
+                  domain={[0, "auto"]}
                   tickFormatter={(v: number) => formatNumber(v)}
                   stroke="var(--muted-foreground)"
                 />
                 <Tooltip
-                  cursor={{ fill: "var(--muted)", opacity: 0.5 }}
+                  cursor={{ stroke: "var(--border)" }}
                   formatter={(value) => [
                     `${formatNumber(Number(value))} ${metric.unit}`,
                     "用量",
@@ -92,8 +96,16 @@ export function TrendDialog({ metric, open, onOpenChange }: TrendDialogProps) {
                     label={{ value: "配额", position: "insideTopRight", fontSize: 11, fill: "#ef4444" }}
                   />
                 )}
-                <Bar dataKey="used" fill="#f97316" radius={[4, 4, 0, 0]} maxBarSize={40} />
-              </BarChart>
+                <Line
+                  type="monotone"
+                  dataKey="used"
+                  stroke="#f97316"
+                  strokeWidth={2}
+                  dot={{ r: 3, strokeWidth: 2, fill: "var(--background)" }}
+                  activeDot={{ r: 5 }}
+                  connectNulls
+                />
+              </LineChart>
             </ResponsiveContainer>
           </div>
         )}
