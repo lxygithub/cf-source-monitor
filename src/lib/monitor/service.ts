@@ -15,6 +15,7 @@ import {
   getD1DatabaseNames,
   getD1StorageBytes,
   getKvNamespaceNames,
+  getPagesProjectNames,
   queryR2MonthlyOperations,
   queryExtendedUsage,
   queryUsageTrend,
