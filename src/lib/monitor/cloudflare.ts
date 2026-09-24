@@ -232,7 +232,7 @@ export function queryUsageTrend(
       }
     }
   `;
-  return graphql<{ viewer: { accounts: { [k: string]: UsageDataset }[] } }>(
+  return graphql<{ viewer: { accounts: UsageDataset[] } }>(
     token,
     query,
     { accountTag: accountId, datetimeFrom, datetimeTo, dateFrom, dateTo }
