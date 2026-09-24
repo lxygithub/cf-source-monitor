@@ -96,7 +96,13 @@ async function refreshResourceNames(accountId: string, apiToken: string) {
     db: normalizeNameMap(databases),
     pj: normalizeNameMap(projects),
   };
-  resourceNameCache.set(accountId, entry);
+  // 三个名称表都为空时（多为缺权限或账号确实没有资源）不落缓存，
+  // 否则补齐权限后要等 TTL 过期才会重新拉取
+  if (entry.ns.size + entry.db.size + entry.pj.size > 0) {
+    resourceNameCache.set(accountId, entry);
+  } else {
+    resourceNameCache.delete(accountId);
+  }
   return entry;
 }
 
