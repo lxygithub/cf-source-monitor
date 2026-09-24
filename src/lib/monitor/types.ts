@@ -69,6 +69,8 @@ export interface MetricStatus {
   remaining: number | null;
   level: UsageLevel;
   custom: boolean;
+  /** 是否已收藏（收藏的卡片置顶单独成组） */
+  favorite?: boolean;
   customId?: string;
   /** 近 7 日趋势（按天去重，每天取最后一次快照） */
   history: { date: string; used: number }[];

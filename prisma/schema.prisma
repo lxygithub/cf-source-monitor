@@ -52,3 +52,12 @@ model CustomMetric {
   updatedAt DateTime @updatedAt
   @@unique([accountId, name])
 }
+
+// 卡片收藏（收藏的指标在面板最前面单独一组展示）
+model MetricFavorite {
+  id        String   @id @default(cuid())
+  accountId String
+  metric    String
+  createdAt DateTime @default(now())
+  @@unique([accountId, metric])
+}

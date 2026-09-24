@@ -296,7 +296,37 @@ export async function deleteAccount(id: string) {
   await db.metricQuota.deleteMany({ where: { accountId: account.accountId } });
   await db.usageSnapshot.deleteMany({ where: { accountId: account.accountId } });
   await db.customMetric.deleteMany({ where: { accountId: account.accountId } });
+  await db.metricFavorite.deleteMany({ where: { accountId: account.accountId } });
   await db.cfAccount.delete({ where: { id } });
+}
+
+// ---------------------------------------------------------------------------
+// 卡片收藏
+// ---------------------------------------------------------------------------
+
+/** 收藏的指标 ID 集合（accountId 为 Cloudflare Account ID） */
+export async function listFavorites(accountId: string): Promise<Set<string>> {
+  const rows = await db.metricFavorite.findMany({
+    where: { accountId },
+    select: { metric: true },
+  });
+  return new Set(rows.map((r) => r.metric));
+}
+
+export async function setFavorite(
+  accountId: string,
+  metric: string,
+  favorite: boolean
+) {
+  if (favorite) {
+    await db.metricFavorite.upsert({
+      where: { accountId_metric: { accountId, metric } },
+      create: { accountId, metric },
+      update: {},
+    });
+  } else {
+    await db.metricFavorite.deleteMany({ where: { accountId, metric } });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1219,6 +1249,7 @@ async function buildGroup(account: {
 }): Promise<AccountGroup> {
   const accountId = account.accountId;
   const quotaMap = await getQuotaMap(accountId);
+  const favorites = await listFavorites(accountId);
   const { defs: splitDefs, resources: splitResources } =
     await dynamicMetricDefs(accountId);
   const latest = await latestSnapshotMap(
@@ -1245,6 +1276,7 @@ async function buildGroup(account: {
       remaining: used === null ? null : quota - used,
       level: getLevel(percent),
       custom: false,
+      favorite: favorites.has(def.id),
       history: await historyFor(accountId, def.id),
       resource: splitResources.get(def.id),
       accountDbId: account.id,

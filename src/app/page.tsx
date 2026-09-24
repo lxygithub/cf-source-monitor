@@ -67,8 +67,40 @@ export default function MonitorPage() {
   }, []);
 
   useEffect(() => {
-    void fetchStatus().finally(() => setLoading(false));
+    // 恢复上次选择的账号视图
+    const saved = window.localStorage.getItem("cf-monitor:view");
+    if (saved) {
+      viewRef.current = saved;
+      setView(saved);
+    }
+    void fetchStatus(saved ?? undefined).finally(() => setLoading(false));
   }, [fetchStatus]);
+
+  const handleToggleFavorite = useCallback(
+    async (m: MetricStatus) => {
+      try {
+        const res = await fetch("/api/favorites", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            accountDbId: m.accountDbId,
+            metric: m.metric,
+            favorite: !m.favorite,
+          }),
+        });
+        const data = (await res.json()) as { ok: boolean; error?: string };
+        if (!data.ok) {
+          toast.error(data.error ?? "操作失败");
+          return;
+        }
+        toast.success(data.ok && m.favorite ? "已取消收藏" : "已收藏，置顶显示");
+        await fetchStatus();
+      } catch {
+        toast.error("网络错误，请稍后重试");
+      }
+    },
+    [fetchStatus]
+  );
 
   const handleRefresh = useCallback(async (silent = false) => {
     if (refreshingRef.current) return;
@@ -182,6 +214,7 @@ export default function MonitorPage() {
         onViewChange={(v) => {
           viewRef.current = v;
           setView(v);
+          window.localStorage.setItem("cf-monitor:view", v);
           void fetchStatus(v);
         }}
         onRefresh={() => void handleRefresh()}
@@ -248,6 +281,7 @@ export default function MonitorPage() {
                 }}
                 onDeleteCustom={(m) => void handleDeleteCustom(m)}
                 onAddCustom={() => openAddCustom(group.accountId)}
+                onToggleFavorite={handleToggleFavorite}
               />
             ))}
           </div>
@@ -317,6 +351,7 @@ interface AccountSectionProps {
   onUpdateUsage: (m: MetricStatus) => void;
   onDeleteCustom: (m: MetricStatus) => void;
   onAddCustom: () => void;
+  onToggleFavorite: (m: MetricStatus) => void;
 }
 
 /** 内置指标按分类分组，顺序固定；未列入 CATEGORY_ORDER 的分类排在后面 */
@@ -341,6 +376,65 @@ function categorySections(
   return ordered;
 }
 
+interface MetricSectionProps {
+  category: string;
+  metrics: MetricStatus[];
+  onEditQuota: (m: MetricStatus) => void;
+  onShowTrend: (m: MetricStatus) => void;
+  onToggleFavorite: (m: MetricStatus) => void;
+}
+
+/** 一个分类的指标分组：色条 + 标题 + 告警计数 + 卡片网格 */
+function MetricSection({
+  category,
+  metrics,
+  onEditQuota,
+  onShowTrend,
+  onToggleFavorite,
+}: MetricSectionProps) {
+  const meta = categoryMeta(category);
+  const SectionIcon = meta.icon;
+  const over = metrics.filter(
+    (m) => m.level === "danger" || m.level === "over"
+  ).length;
+  const warn = metrics.filter((m) => m.level === "warning").length;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={cn("h-4 w-1 rounded-full", meta.bar)} />
+        <SectionIcon className="size-4 text-muted-foreground" />
+        <h3 className="text-sm font-medium">{meta.label}</h3>
+        <span className="text-xs text-muted-foreground">{metrics.length}</span>
+        {over > 0 && (
+          <Badge className="border-transparent bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-400">
+            {over} 需处理
+          </Badge>
+        )}
+        {over === 0 && warn > 0 && (
+          <Badge className="border-transparent bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400">
+            {warn} 接近限额
+          </Badge>
+        )}
+        <span className="ml-auto hidden text-xs text-muted-foreground sm:block">
+          {meta.hint}
+        </span>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {metrics.map((m) => (
+          <MetricCard
+            key={m.metric}
+            status={m}
+            onEditQuota={onEditQuota}
+            onShowTrend={onShowTrend}
+            onToggleFavorite={onToggleFavorite}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AccountSection({
   group,
   showHeader,
@@ -350,7 +444,10 @@ function AccountSection({
   onUpdateUsage,
   onDeleteCustom,
   onAddCustom,
+  onToggleFavorite,
 }: AccountSectionProps) {
+  const favorites = group.builtin.filter((m) => m.favorite);
+
   return (
     <section aria-label={`账号 ${group.name}`} className="space-y-3">
       {showHeader && (
@@ -369,51 +466,31 @@ function AccountSection({
         </div>
       )}
 
-      {/* 自动采集指标：按分类分组 */}
+      {/* 收藏：置顶单独成组 */}
+      {favorites.length > 0 && (
+        <MetricSection
+          category="favorite"
+          metrics={favorites}
+          onEditQuota={onEditQuota}
+          onShowTrend={onShowTrend}
+          onToggleFavorite={onToggleFavorite}
+        />
+      )}
+
+      {/* 自动采集指标：按分类分组（收藏的已在上面单独展示） */}
       <div className="space-y-6">
-        {categorySections(group.builtin).map(([key, list]) => {
-          const meta = categoryMeta(key);
-          const SectionIcon = meta.icon;
-          const over = list.filter(
-            (m) => m.level === "danger" || m.level === "over"
-          ).length;
-          const warn = list.filter((m) => m.level === "warning").length;
-          return (
-            <div key={key} className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className={cn("h-4 w-1 rounded-full", meta.bar)} />
-                <SectionIcon className="size-4 text-muted-foreground" />
-                <h3 className="text-sm font-medium">{meta.label}</h3>
-                <span className="text-xs text-muted-foreground">
-                  {list.length}
-                </span>
-                {over > 0 && (
-                  <Badge className="border-transparent bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-400">
-                    {over} 需处理
-                  </Badge>
-                )}
-                {over === 0 && warn > 0 && (
-                  <Badge className="border-transparent bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400">
-                    {warn} 接近限额
-                  </Badge>
-                )}
-                <span className="ml-auto hidden text-xs text-muted-foreground sm:block">
-                  {meta.hint}
-                </span>
-              </div>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {list.map((m) => (
-                  <MetricCard
-                    key={m.metric}
-                    status={m}
-                    onEditQuota={onEditQuota}
-                    onShowTrend={onShowTrend}
-                  />
-                ))}
-              </div>
-            </div>
-          );
-        })}
+        {categorySections(group.builtin.filter((m) => !m.favorite)).map(
+          ([key, list]) => (
+            <MetricSection
+              key={key}
+              category={key}
+              metrics={list}
+              onEditQuota={onEditQuota}
+              onShowTrend={onShowTrend}
+              onToggleFavorite={onToggleFavorite}
+            />
+          )
+        )}
       </div>
 
       {/* 自定义指标 */}

@@ -6,6 +6,7 @@ import {
   Gauge,
   HardDrive,
   Layers,
+  Star,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -70,6 +71,14 @@ export const CATEGORY_META: Record<string, CategoryMeta> = {
     chip: "text-violet-600 bg-violet-100 dark:bg-violet-950/60",
     dot: "bg-violet-500",
     bar: "bg-violet-500/70",
+  },
+  favorite: {
+    label: "收藏",
+    hint: "置顶显示",
+    icon: Star,
+    chip: "text-amber-500 bg-amber-100 dark:bg-amber-950/60",
+    dot: "bg-amber-500",
+    bar: "bg-amber-500/70",
   },
 };
 

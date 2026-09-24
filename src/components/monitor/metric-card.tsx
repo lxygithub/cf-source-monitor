@@ -7,6 +7,7 @@ import {
   Trash2,
   PenLine,
   TrendingUp,
+  Star,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -63,6 +64,7 @@ interface MetricCardProps {
   onEditCustom?: (m: MetricStatus) => void;
   onDeleteCustom?: (m: MetricStatus) => void;
   onUpdateUsage?: (m: MetricStatus) => void;
+  onToggleFavorite?: (m: MetricStatus) => void;
   onShowTrend: (m: MetricStatus) => void;
 }
 
@@ -72,6 +74,7 @@ export function MetricCard({
   onEditCustom,
   onDeleteCustom,
   onUpdateUsage,
+  onToggleFavorite,
   onShowTrend,
 }: MetricCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -121,6 +124,25 @@ export function MetricCard({
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
+            {!status.custom && onToggleFavorite && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  "size-7 transition-opacity",
+                  status.favorite
+                    ? "text-amber-500"
+                    : "text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                )}
+                onClick={() => onToggleFavorite(status)}
+                aria-label={status.favorite ? "取消收藏" : "收藏卡片"}
+                title={status.favorite ? "取消收藏（置顶显示）" : "收藏后置顶显示"}
+              >
+                <Star
+                  className={cn("size-4", status.favorite && "fill-amber-400")}
+                />
+              </Button>
+            )}
             {status.custom ? (
               <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
                 <DropdownMenuTrigger asChild>
