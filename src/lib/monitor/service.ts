@@ -387,7 +387,8 @@ async function saveDailySeries(
   accountId: string,
   metric: string,
   byDate: Map<string, number>,
-  now: Date
+  now: Date,
+  lagging: boolean
 ) {
   for (const [date, value] of byDate) {
     await saveDailySnapshot(
@@ -398,7 +399,9 @@ async function saveDailySeries(
     );
   }
   const todayKey = isoDate(now);
-  if (byDate.size > 0 && !byDate.has(todayKey)) {
+  if (byDate.has(todayKey)) return;
+  if (lagging && byDate.size > 0) {
+    // 整个数据集都还没出今天的数据（通常是分析数据滞后）→ 用最近可用日填充
     const latestKey = [...byDate.keys()].sort().at(-1) as string;
     await saveDailySnapshot(
       accountId,
@@ -406,6 +409,9 @@ async function saveDailySeries(
       byDate.get(latestKey) ?? 0,
       now
     );
+  } else {
+    // 数据集已更新但这一项今天没有数据 → 记 0，避免显示成昨天的旧值
+    await saveDailySnapshot(accountId, metric, 0, now);
   }
 }
 
@@ -568,6 +574,19 @@ async function refreshRealAccount(
       };
       const latestDate = (dates: string[]) => [...dates].sort().at(-1) ?? "";
 
+      // 分析数据集整体是否还没出今天的数据（滞后）。滞后时才用「最近可用日」
+      // 填充今日；否则某项今天为空就应记 0，避免显示昨天的旧值。
+      const dataDates: string[] = [];
+      for (const rows of Object.values(extended) as {
+        dimensions?: { date?: string };
+      }[][]) {
+        for (const row of rows ?? []) {
+          const date = row?.dimensions?.date;
+          if (date) dataDates.push(date);
+        }
+      }
+      const lagging = (dataDates.sort().at(-1) ?? "") < isoDate(now);
+
       // KV 操作：按 actionType 拆成 读 / 写 / 删除 / 列举
       const kvByAction = new Map<string, Map<string, number>>();
       for (const row of extended.kvOperations ?? []) {
@@ -655,7 +674,7 @@ async function refreshRealAccount(
         ["hyperdrive_queries", hyperdriveByDate],
       ] as [string, Map<string, number>][];
       for (const [metric, map] of dailyExtra) {
-        await saveDailySeries(accountId, metric, map, now);
+        await saveDailySeries(accountId, metric, map, now, lagging);
       }
 
       // 月度累计指标
@@ -763,7 +782,7 @@ async function refreshRealAccount(
       for (const [key, map] of kvNsMaps) {
         const [action, nsId] = key.split(SPLIT_SEP);
         const metricId = splitMetricId(kvActionToMetric[action], "ns", nsId);
-        await saveDailySeries(accountId, metricId, map, now);
+        await saveDailySeries(accountId, metricId, map, now, lagging);
       }
 
       // ---- 拆分视图：D1 按数据库 ----
@@ -785,7 +804,8 @@ async function refreshRealAccount(
           accountId,
           splitMetricId("d1_rows_read", "db", dbId),
           map,
-          now
+          now,
+          lagging
         );
       }
       for (const [dbId, map] of d1WrittenByDb) {
@@ -793,7 +813,8 @@ async function refreshRealAccount(
           accountId,
           splitMetricId("d1_rows_written", "db", dbId),
           map,
-          now
+          now,
+          lagging
         );
       }
 
@@ -853,13 +874,15 @@ async function refreshRealAccount(
           accountId,
           splitMetricId("pages_functions_requests", "pj", projectId),
           requests,
-          now
+          now,
+          lagging
         );
         await saveDailySeries(
           accountId,
           splitMetricId("pages_functions_error_rate", "pj", projectId),
           errorRates,
-          now
+          now,
+          lagging
         );
       }
     }
