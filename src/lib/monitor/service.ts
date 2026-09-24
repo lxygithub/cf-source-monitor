@@ -52,6 +52,20 @@ const resourceNameCache = new Map<
   { at: number; ns: Map<string, string>; db: Map<string, string> }
 >();
 
+/**
+ * 资源 ID 归一化：分析数据集的 namespaceId 是无连字符的 32 位十六进制，
+ * 而 REST 返回带连字符的 UUID，两边必须归一化后才能对上。
+ */
+function normalizeResourceId(id: string) {
+  return id.replace(/-/g, "").toLowerCase();
+}
+
+function normalizeNameMap(map: Map<string, string>) {
+  const normalized = new Map<string, string>();
+  for (const [id, name] of map) normalized.set(normalizeResourceId(id), name);
+  return normalized;
+}
+
 async function refreshResourceNames(accountId: string, apiToken: string) {
   const cached = resourceNameCache.get(accountId);
   if (cached && Date.now() - cached.at < NAME_CACHE_TTL) return cached;
@@ -59,7 +73,11 @@ async function refreshResourceNames(accountId: string, apiToken: string) {
     getKvNamespaceNames(apiToken, accountId),
     getD1DatabaseNames(apiToken, accountId),
   ]);
-  const entry = { at: Date.now(), ns, db: databases };
+  const entry = {
+    at: Date.now(),
+    ns: normalizeNameMap(ns),
+    db: normalizeNameMap(databases),
+  };
   resourceNameCache.set(accountId, entry);
   return entry;
 }
@@ -67,7 +85,7 @@ async function refreshResourceNames(accountId: string, apiToken: string) {
 function resourceName(accountId: string, scope: "ns" | "db", id: string) {
   const cached = resourceNameCache.get(accountId);
   const map = scope === "ns" ? cached?.ns : cached?.db;
-  return map?.get(id) ?? id;
+  return map?.get(normalizeResourceId(id)) ?? id;
 }
 
 /** 从快照中找出拆分视图指标，生成展示用定义 */
@@ -84,13 +102,15 @@ async function dynamicMetricDefs(accountId: string): Promise<MetricDef[]> {
     const base = METRIC_MAP.get(parsed.base);
     if (!base) continue;
     const name = resourceName(accountId, parsed.scope, parsed.id);
+    // 名称表拿不到时（例如 token 缺 KV 读权限）用短 ID，避免标题过长
+    const display = name === parsed.id ? `${parsed.id.slice(0, 8)}…` : name;
     defs.push({
       ...base,
       id: row.metric,
-      label: `${base.label} · ${name}`,
+      label: `${base.label} · ${display}`,
       description: `${base.description}（拆分视图：${
         parsed.scope === "ns" ? "KV 命名空间" : "D1 数据库"
-      } ${name}）`,
+      } ${display}）`,
     });
   }
   defs.sort((a, b) => a.id.localeCompare(b.id));
