@@ -120,6 +120,20 @@ function splitScopeLabel(scope: SplitScope) {
   return "Pages 项目";
 }
 
+/** 拆分视图用短标签，把标题空间留给资源名（名字在前） */
+const SPLIT_SHORT_LABEL: Record<string, string> = {
+  kv_reads: "KV 读取",
+  kv_writes: "KV 写入",
+  kv_deletes: "KV 删除",
+  kv_lists: "KV 列举",
+  kv_storage: "KV 存储",
+  d1_rows_read: "D1 读取",
+  d1_rows_written: "D1 写入",
+  d1_storage: "D1 存储",
+  pages_functions_requests: "Pages 请求",
+  pages_functions_error_rate: "Pages 错误率",
+};
+
 /** 从快照中找出拆分视图指标，生成展示用定义 */
 async function dynamicMetricDefs(accountId: string): Promise<MetricDef[]> {
   const rows = await db.usageSnapshot.findMany({
@@ -144,7 +158,8 @@ async function dynamicMetricDefs(accountId: string): Promise<MetricDef[]> {
     defs.push({
       ...base,
       id: row.metric,
-      label: `${base.label} · ${display}`,
+      // 资源名放前面：卡片标题窄，截断时优先保留名字
+      label: `${display} · ${SPLIT_SHORT_LABEL[base.id] ?? base.label}`,
       description: `${base.description}（拆分视图：${splitScopeLabel(
         parsed.scope
       )} ${display}）`,

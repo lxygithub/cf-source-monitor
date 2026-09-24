@@ -96,7 +96,10 @@ export function MetricCard({
               <Icon className="size-4" />
             </span>
             <div className="min-w-0">
-              <p className="truncate text-sm font-medium leading-tight">
+              <p
+                className="line-clamp-2 text-sm font-medium leading-tight"
+                title={status.label}
+              >
                 {status.label}
               </p>
               <p className="text-[11px] leading-tight text-muted-foreground">
