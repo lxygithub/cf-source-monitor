@@ -309,24 +309,18 @@ async function saveDailySnapshot(
 ) {
   const dayStart = utcDayStart(day);
   const dayEnd = new Date(dayStart.getTime() + DAY_MS);
-  const exists = await db.usageSnapshot.findFirst({
+  // 按「日」幂等写入：先清掉这一天区间内的旧行（含历史遗留的重复行），再写一条
+  await db.usageSnapshot.deleteMany({
     where: {
       accountId,
       metric,
       capturedAt: { gte: dayStart, lt: dayEnd },
     },
   });
-  if (exists) {
-    await db.usageSnapshot.update({
-      where: { id: exists.id },
-      data: { used },
-    });
-  } else {
-    await db.usageSnapshot.create({
-      // 回填历史日期时必须落在对应那天，否则 7 天历史会全部挤到"今天"
-      data: { accountId, metric, used, capturedAt: dayStart },
-    });
-  }
+  await db.usageSnapshot.create({
+    // 回填历史日期时必须落在对应那天，否则 7 天历史会全部挤到"今天"
+    data: { accountId, metric, used, capturedAt: dayStart },
+  });
 }
 
 async function savePointSnapshot(
