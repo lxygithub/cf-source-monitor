@@ -108,7 +108,9 @@ export function MetricCard({
                   title={`${status.resource.metricLabel} · ${status.resource.id}`}
                 >
                   {status.resource.metricLabel} ·{" "}
-                  <span className="font-mono">{status.resource.id}</span>
+                  <span className="font-mono">
+                    {status.resource.idDisplay}
+                  </span>
                 </p>
               ) : (
                 <p className="text-[11px] leading-tight text-muted-foreground">

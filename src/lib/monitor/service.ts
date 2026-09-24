@@ -137,7 +137,10 @@ const SPLIT_SHORT_LABEL: Record<string, string> = {
 /** 从快照中找出拆分视图指标：生成展示用定义 + 资源信息 */
 async function dynamicMetricDefs(accountId: string): Promise<{
   defs: MetricDef[];
-  resources: Map<string, { id: string; name: string; metricLabel: string }>;
+  resources: Map<
+    string,
+    { id: string; idDisplay: string; name: string; metricLabel: string }
+  >;
 }> {
   const rows = await db.usageSnapshot.findMany({
     where: { accountId },
@@ -147,7 +150,7 @@ async function dynamicMetricDefs(accountId: string): Promise<{
   const collected: { def: MetricDef; sortKey: string }[] = [];
   const resources = new Map<
     string,
-    { id: string; name: string; metricLabel: string }
+    { id: string; idDisplay: string; name: string; metricLabel: string }
   >();
   for (const row of rows) {
     const parsed = parseSplitMetricId(row.metric);
@@ -178,6 +181,9 @@ async function dynamicMetricDefs(accountId: string): Promise<{
     });
     resources.set(row.metric, {
       id: parsed.id,
+      // 长 ID（KV 32 位 / D1 uuid）在卡片上缩略显示，完整值走 title
+      idDisplay:
+        parsed.id.length > 12 ? `${parsed.id.slice(0, 8)}…` : parsed.id,
       name: display,
       metricLabel,
     });

@@ -76,6 +76,8 @@ export interface MetricStatus {
   resource?: {
     /** 资源原始 ID（namespace id / 数据库 uuid / 项目数字 ID） */
     id: string;
+    /** 展示用 ID（过长时缩略，完整值见 id） */
+    idDisplay: string;
     /** 资源显示名（取不到名称时为短 ID） */
     name: string;
     /** 指标短名，如 "Pages 错误率" */
