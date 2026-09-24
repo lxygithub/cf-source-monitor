@@ -21,6 +21,7 @@ export type BuiltinMetricId =
   | "workers_builds_minutes"
   | "pages_functions_requests"
   | "pages_functions_error_rate"
+  | "pages_functions_error_rate_7d"
   | "durable_objects_requests"
   | "r2_storage"
   | "r2_class_a"

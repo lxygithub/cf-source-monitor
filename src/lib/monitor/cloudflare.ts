@@ -304,7 +304,7 @@ export interface ExtendedUsageData {
     sum: { requests: number } | null;
   }[];
   pagesFunctions: {
-    dimensions: { date: string };
+    dimensions: { date: string; scriptName: string };
     sum: { requests: number; errors: number } | null;
   }[];
   durableObjects: {
@@ -410,7 +410,7 @@ export function queryExtendedUsage(
             limit: 500
             filter: { date_geq: $weekFrom, date_leq: $weekTo }
           ) {
-            dimensions { date }
+            dimensions { date scriptName }
             sum { requests errors }
           }
           durableObjects: durableObjectsInvocationsAdaptiveGroups(
@@ -551,6 +551,22 @@ export async function getD1DatabaseNames(
   const map = new Map<string, string>();
   for (const row of rows ?? []) {
     if (row?.uuid) map.set(row.uuid, row.name || row.uuid);
+  }
+  return map;
+}
+
+/** Pages 项目名称表（项目 ID → 项目名）。需要 Pages:Read，失败返回空表 */
+export async function getPagesProjectNames(
+  token: string,
+  accountId: string
+): Promise<Map<string, string>> {
+  const rows = await restGet<{ id?: string; name?: string }[]>(
+    token,
+    `/accounts/${accountId}/pages/projects?per_page=100`
+  );
+  const map = new Map<string, string>();
+  for (const row of rows ?? []) {
+    if (row?.id) map.set(row.id, row.name || row.id);
   }
   return map;
 }

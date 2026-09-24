@@ -56,7 +56,17 @@ export const METRIC_REGISTRY: MetricDef[] = [
     description: "当日 Pages Functions 错误率（errors / requests × 100）",
     unit: "%",
     period: "day",
-    defaultQuota: 1,
+    defaultQuota: 2,
+    category: "workers",
+  },
+  {
+    id: "pages_functions_error_rate_7d",
+    label: "Pages Functions 错误率（近 7 日）",
+    description:
+      "近 7 日滚动错误率（errors / requests × 100），用于抹平单日尖刺",
+    unit: "%",
+    period: "day",
+    defaultQuota: 2,
     category: "workers",
   },
   {

@@ -30,26 +30,41 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 const SPLIT_SEP = "|";
 
-function splitMetricId(base: string, scope: "ns" | "db", id: string) {
+type SplitScope = "ns" | "db" | "pj";
+
+function splitMetricId(base: string, scope: SplitScope, id: string) {
   return `${base}${SPLIT_SEP}${scope}${SPLIT_SEP}${id}`;
 }
 
 function parseSplitMetricId(
   metric: string
-): { base: string; scope: "ns" | "db"; id: string } | null {
+): { base: string; scope: SplitScope; id: string } | null {
   const parts = metric.split(SPLIT_SEP);
   if (parts.length !== 3) return null;
   const [base, scope, id] = parts;
-  if (scope !== "ns" && scope !== "db") return null;
+  if (scope !== "ns" && scope !== "db" && scope !== "pj") return null;
   if (!METRIC_MAP.has(base) || !id) return null;
-  return { base, scope, id };
+  return { base, scope: scope as SplitScope, id };
+}
+
+/** Pages 脚本名 → 项目 ID：pages-worker--<projectId>-production */
+function pagesProjectId(scriptName: string) {
+  const matched = /^pages-worker--(.+?)-(production|preview|staging)$/.exec(
+    scriptName
+  );
+  return matched ? matched[1] : scriptName;
 }
 
 /** 资源名称缓存（KV namespace / D1 库名）：刷新时填充，读取状态时不再打 Cloudflare */
 const NAME_CACHE_TTL = 6 * 60 * 60 * 1000;
 const resourceNameCache = new Map<
   string,
-  { at: number; ns: Map<string, string>; db: Map<string, string> }
+  {
+    at: number;
+    ns: Map<string, string>;
+    db: Map<string, string>;
+    pj: Map<string, string>;
+  }
 >();
 
 /**
@@ -73,19 +88,28 @@ async function refreshResourceNames(accountId: string, apiToken: string) {
     getKvNamespaceNames(apiToken, accountId),
     getD1DatabaseNames(apiToken, accountId),
   ]);
+  const projects = await getPagesProjectNames(apiToken, accountId);
   const entry = {
     at: Date.now(),
     ns: normalizeNameMap(ns),
     db: normalizeNameMap(databases),
+    pj: normalizeNameMap(projects),
   };
   resourceNameCache.set(accountId, entry);
   return entry;
 }
 
-function resourceName(accountId: string, scope: "ns" | "db", id: string) {
+function resourceName(accountId: string, scope: SplitScope, id: string) {
   const cached = resourceNameCache.get(accountId);
-  const map = scope === "ns" ? cached?.ns : cached?.db;
+  const map =
+    scope === "ns" ? cached?.ns : scope === "db" ? cached?.db : cached?.pj;
   return map?.get(normalizeResourceId(id)) ?? id;
+}
+
+function splitScopeLabel(scope: SplitScope) {
+  if (scope === "ns") return "KV 命名空间";
+  if (scope === "db") return "D1 数据库";
+  return "Pages 项目";
 }
 
 /** 从快照中找出拆分视图指标，生成展示用定义 */
@@ -103,14 +127,19 @@ async function dynamicMetricDefs(accountId: string): Promise<MetricDef[]> {
     if (!base) continue;
     const name = resourceName(accountId, parsed.scope, parsed.id);
     // 名称表拿不到时（例如 token 缺 KV 读权限）用短 ID，避免标题过长
-    const display = name === parsed.id ? `${parsed.id.slice(0, 8)}…` : name;
+    const display =
+      parsed.scope === "pj" && parsed.id === "__unknown__"
+        ? "未知项目"
+        : name === parsed.id
+          ? `${parsed.id.slice(0, 8)}…`
+          : name;
     defs.push({
       ...base,
       id: row.metric,
       label: `${base.label} · ${display}`,
-      description: `${base.description}（拆分视图：${
-        parsed.scope === "ns" ? "KV 命名空间" : "D1 数据库"
-      } ${display}）`,
+      description: `${base.description}（拆分视图：${splitScopeLabel(
+        parsed.scope
+      )} ${display}）`,
     });
   }
   defs.sort((a, b) => a.id.localeCompare(b.id));
@@ -514,6 +543,22 @@ async function refreshRealAccount(
         );
       }
 
+      // 近 7 日滚动错误率：单日尖刺不影响整体判断
+      let pagesWeekRequests = 0;
+      let pagesWeekErrors = 0;
+      for (const row of extended.pagesFunctions ?? []) {
+        pagesWeekRequests += row.sum?.requests ?? 0;
+        pagesWeekErrors += row.sum?.errors ?? 0;
+      }
+      await saveDailySnapshot(
+        accountId,
+        "pages_functions_error_rate_7d",
+        pagesWeekRequests > 0
+          ? (pagesWeekErrors / pagesWeekRequests) * 100
+          : 0,
+        now
+      );
+
       const doByDate = new Map<string, number>();
       for (const row of extended.durableObjects ?? []) {
         addTo(doByDate, row.dimensions?.date, row.sum?.requests ?? 0);
@@ -722,6 +767,45 @@ async function refreshRealAccount(
           splitMetricId("d1_storage", "db", dbId),
           bytes / 1024 ** 3
         );
+      }
+
+      // ---- 拆分视图：Pages Functions 按项目 ----
+      const pagesByProject = new Map<
+        string,
+        Map<string, { requests: number; errors: number }>
+      >();
+      for (const row of extended.pagesFunctions ?? []) {
+        const scriptName = row.dimensions?.scriptName;
+        const date = row.dimensions?.date;
+        if (!scriptName || !date) continue;
+        const projectId = pagesProjectId(scriptName);
+        const byDate =
+          pagesByProject.get(projectId) ??
+          new Map<string, { requests: number; errors: number }>();
+        const current = byDate.get(date) ?? { requests: 0, errors: 0 };
+        current.requests += row.sum?.requests ?? 0;
+        current.errors += row.sum?.errors ?? 0;
+        byDate.set(date, current);
+        pagesByProject.set(projectId, byDate);
+      }
+      for (const [projectId, byDate] of pagesByProject) {
+        for (const [date, value] of byDate) {
+          const day = new Date(`${date}T00:00:00Z`);
+          await saveDailySnapshot(
+            accountId,
+            splitMetricId("pages_functions_requests", "pj", projectId),
+            value.requests,
+            day
+          );
+          if (value.requests > 0) {
+            await saveDailySnapshot(
+              accountId,
+              splitMetricId("pages_functions_error_rate", "pj", projectId),
+              (value.errors / value.requests) * 100,
+              day
+            );
+          }
+        }
       }
     }
 
