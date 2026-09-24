@@ -13,7 +13,9 @@ import {
   classifyR2Action,
   getD1StorageBytes,
   queryR2MonthlyOperations,
+  queryExtendedUsage,
   queryUsageTrend,
+  type ExtendedUsageData,
 } from "./cloudflare";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -299,11 +301,32 @@ async function refreshRealAccount(
       else monthB += row.sum?.requests ?? 0;
     }
 
-    // D1 存储总量（REST）
-    const d1Bytes = await getD1StorageBytes(apiToken, accountId);
-    if (d1Bytes === null) {
-      errors.push("D1 存储用量获取失败（缺少 D1:Read 权限或账号无 D1）");
+    // 扩展数据集（KV / Workers AI / Pages / Durable Objects / Vectorize / 带宽等）
+    // 单独请求并单独 try：某数据集不可用时不拖垮主指标
+    let extended: ExtendedUsageData | null = null;
+    try {
+      // Cloudflare 限制查询时间窗（最大约 4w4d，部分数据集更短），
+      // 月维度取「月初」与「最近 27 天」中较晚的一个
+      const monthFrom = new Date(
+        Math.max(utcMonthStart(now).getTime(), now.getTime() - 27 * DAY_MS)
+      );
+      const res = await queryExtendedUsage(
+        apiToken,
+        accountId,
+        isoDate(weekStart),
+        isoDate(now),
+        isoDate(monthFrom),
+        isoDate(now)
+      );
+      extended = res?.viewer?.accounts?.[0] ?? null;
+      if (!extended) errors.push("扩展指标采集失败：无法读取扩展数据集");
+    } catch (err) {
+      errors.push(
+        `扩展指标采集失败：${err instanceof Error ? err.message : "未知错误"}`
+      );
     }
+
+    let d1Bytes: number | null = null;
 
     // ---- 写入快照 ----
     await ensureDefaultQuotas(accountId);
@@ -335,6 +358,187 @@ async function refreshRealAccount(
     await savePointSnapshot(accountId, "r2_class_a", monthA);
     await savePointSnapshot(accountId, "r2_class_b", monthB);
     await savePointSnapshot(accountId, "r2_storage", r2StorageBytes / 1024 ** 3);
+
+    if (extended) {
+      const addTo = (map: Map<string, number>, date: string, value: number) => {
+        if (!date || !Number.isFinite(value)) return;
+        map.set(date, (map.get(date) ?? 0) + value);
+      };
+      const latestDate = (dates: string[]) => [...dates].sort().at(-1) ?? "";
+
+      // KV 操作：按 actionType 拆成 读 / 写 / 删除 / 列举
+      const kvByAction = new Map<string, Map<string, number>>();
+      for (const row of extended.kvOperations ?? []) {
+        const action = String(row.dimensions?.actionType ?? "").toLowerCase();
+        const map = kvByAction.get(action) ?? new Map<string, number>();
+        addTo(map, row.dimensions?.date, row.sum?.requests ?? 0);
+        kvByAction.set(action, map);
+      }
+
+      const aiByDate = new Map<string, number>();
+      for (const row of extended.aiInference ?? []) {
+        addTo(aiByDate, row.dimensions?.date, row.sum?.totalNeurons ?? 0);
+      }
+
+      const subrequestsByDate = new Map<string, number>();
+      for (const row of extended.workersSubrequests ?? []) {
+        addTo(
+          subrequestsByDate,
+          row.dimensions?.date,
+          row.sum?.subrequests ?? 0
+        );
+      }
+
+      const cacheByDate = new Map<string, number>();
+      for (const row of extended.workersCacheRequests ?? []) {
+        addTo(cacheByDate, row.dimensions?.date, row.sum?.requests ?? 0);
+      }
+
+      const pagesRequestsByDate = new Map<string, number>();
+      const pagesErrorsByDate = new Map<string, number>();
+      for (const row of extended.pagesFunctions ?? []) {
+        addTo(
+          pagesRequestsByDate,
+          row.dimensions?.date,
+          row.sum?.requests ?? 0
+        );
+        addTo(pagesErrorsByDate, row.dimensions?.date, row.sum?.errors ?? 0);
+      }
+      const pagesErrorRateByDate = new Map<string, number>();
+      for (const [date, requests] of pagesRequestsByDate) {
+        const errs = pagesErrorsByDate.get(date) ?? 0;
+        pagesErrorRateByDate.set(
+          date,
+          requests > 0 ? (errs / requests) * 100 : 0
+        );
+      }
+
+      const doByDate = new Map<string, number>();
+      for (const row of extended.durableObjects ?? []) {
+        addTo(doByDate, row.dimensions?.date, row.sum?.requests ?? 0);
+      }
+
+      const hyperdriveByDate = new Map<string, number>();
+      for (const row of extended.hyperdriveQueries ?? []) {
+        addTo(hyperdriveByDate, row.dimensions?.date, row.count ?? 0);
+      }
+
+      const dailyExtra: [string, Map<string, number>][] = [
+        ["kv_reads", kvByAction.get("read") ?? new Map()],
+        ["kv_writes", kvByAction.get("write") ?? new Map()],
+        ["kv_deletes", kvByAction.get("delete") ?? new Map()],
+        ["kv_lists", kvByAction.get("list") ?? new Map()],
+        ["ai_neurons", aiByDate],
+        ["workers_subrequests", subrequestsByDate],
+        ["workers_cache_requests", cacheByDate],
+        ["pages_functions_requests", pagesRequestsByDate],
+        ["pages_functions_error_rate", pagesErrorRateByDate],
+        ["durable_objects_requests", doByDate],
+        ["hyperdrive_queries", hyperdriveByDate],
+      ] as [string, Map<string, number>][];
+      for (const [metric, map] of dailyExtra) {
+        for (const [date, v] of map) {
+          await saveDailySnapshot(
+            accountId,
+            metric,
+            v,
+            new Date(`${date}T00:00:00Z`)
+          );
+        }
+      }
+
+      // 月度累计指标
+      let r2DownBytes = 0;
+      let r2UpBytes = 0;
+      let buildMinutes = 0;
+      let vectorizeQueried = 0;
+      let imagesBilled = 0;
+      let logpushBytes = 0;
+      for (const row of extended.r2Bandwidth ?? []) {
+        r2DownBytes += row.sum?.bytesDownload ?? 0;
+        r2UpBytes += row.sum?.bytesUpload ?? 0;
+      }
+      for (const row of extended.workersBuilds ?? []) {
+        buildMinutes += row.sum?.buildMinutes ?? 0;
+      }
+      for (const row of extended.vectorizeQueries ?? []) {
+        vectorizeQueried += row.sum?.queriedVectorDimensions ?? 0;
+      }
+      for (const row of extended.imagesTransformations ?? []) {
+        imagesBilled += row.sum?.billableEventCount ?? 0;
+      }
+      for (const row of extended.logpushUsage ?? []) {
+        logpushBytes += row.sum?.billableBytes ?? 0;
+      }
+      await savePointSnapshot(
+        accountId,
+        "r2_bandwidth_download",
+        r2DownBytes / 1024 ** 3
+      );
+      await savePointSnapshot(
+        accountId,
+        "r2_bandwidth_upload",
+        r2UpBytes / 1024 ** 3
+      );
+      await savePointSnapshot(accountId, "workers_builds_minutes", buildMinutes);
+      await savePointSnapshot(accountId, "vectorize_queries", vectorizeQueried);
+      await savePointSnapshot(
+        accountId,
+        "images_transformations",
+        imagesBilled
+      );
+      await savePointSnapshot(accountId, "logpush_bytes", logpushBytes / 1024 ** 3);
+
+      // 总量指标：只取最新一天的数据，避免把历史值累加
+      function sumOnLatest<T>(
+        rows: T[],
+        dateOf: (row: T) => string | undefined,
+        valueOf: (row: T) => number
+      ): number {
+        const latest = latestDate(
+          rows.map(dateOf).filter((d): d is string => Boolean(d))
+        );
+        return rows.reduce(
+          (acc, row) => (dateOf(row) === latest ? acc + valueOf(row) : acc),
+          0
+        );
+      }
+
+      await savePointSnapshot(
+        accountId,
+        "kv_storage",
+        sumOnLatest(
+          extended.kvStorage ?? [],
+          (r) => r.dimensions?.date,
+          (r) => r.max?.byteCount ?? 0
+        ) /
+          1024 ** 3
+      );
+      await savePointSnapshot(
+        accountId,
+        "vectorize_storage",
+        sumOnLatest(
+          extended.vectorizeStorage ?? [],
+          (r) => r.dimensions?.date,
+          (r) => r.max?.storedVectorDimensions ?? 0
+        )
+      );
+
+      const d1AnalyticsBytes = sumOnLatest(
+        extended.d1Storage ?? [],
+        (r) => r.dimensions?.date,
+        (r) => r.max?.databaseSizeBytes ?? 0
+      );
+      if (d1AnalyticsBytes > 0) d1Bytes = d1AnalyticsBytes;
+    }
+
+    // D1 存储：分析数据集拿不到时回退 REST（需 D1:Read 权限）
+    if (d1Bytes === null) {
+      d1Bytes = await getD1StorageBytes(apiToken, accountId);
+      if (d1Bytes === null) {
+        errors.push("D1 存储用量获取失败（缺少 D1:Read 权限或账号无 D1）");
+      }
+    }
     if (d1Bytes !== null) {
       await savePointSnapshot(accountId, "d1_storage", d1Bytes / 1024 ** 3);
     }
@@ -358,15 +562,8 @@ async function refreshRealAccount(
 interface DemoSpec {
   accountId: string;
   name: string;
-  base: {
-    workers_requests: number;
-    r2_class_a: number;
-    r2_class_b: number;
-    r2_storage: number;
-    d1_rows_read: number;
-    d1_rows_written: number;
-    d1_storage: number;
-  };
+  /** 指标基准值；未列出的指标按配额比例生成模拟值 */
+  base: Record<string, number>;
   customs: {
     name: string;
     unit: string;
@@ -435,13 +632,18 @@ async function seedOneDemo(spec: DemoSpec) {
   const now = new Date();
   const today = utcDayStart(now);
 
-  // 近 7 日每日指标历史（不含今日）
+  const quotaMap = await getQuotaMap(spec.accountId);
+  const baseValue = (metric: string) =>
+    spec.base[metric] ??
+    Math.round((quotaMap.get(metric) ?? 1) * (0.15 + Math.random() * 0.3));
+
+  // 近 7 日每日指标历史（不含今日）：全部日维度指标 + R2 Class A/B
   const dailyBase: [string, number][] = [
-    ["workers_requests", spec.base.workers_requests],
-    ["d1_rows_read", spec.base.d1_rows_read],
-    ["d1_rows_written", spec.base.d1_rows_written],
-    ["r2_class_a", spec.base.r2_class_a],
-    ["r2_class_b", spec.base.r2_class_b],
+    ...METRIC_REGISTRY.filter((m) => m.period === "day").map(
+      (m) => [m.id, baseValue(m.id)] as [string, number]
+    ),
+    ["r2_class_a", baseValue("r2_class_a")],
+    ["r2_class_b", baseValue("r2_class_b")],
   ];
   for (let i = 6; i >= 1; i--) {
     const day = new Date(today.getTime() - i * DAY_MS);
@@ -465,8 +667,11 @@ async function seedOneDemo(spec: DemoSpec) {
   for (const [metric, v] of dailyBase) {
     await saveDailySnapshot(spec.accountId, metric, v, now);
   }
-  await savePointSnapshot(spec.accountId, "r2_storage", spec.base.r2_storage);
-  await savePointSnapshot(spec.accountId, "d1_storage", spec.base.d1_storage);
+  // 月度 / 总量指标：每个指标记一个点
+  for (const def of METRIC_REGISTRY) {
+    if (def.period === "day") continue;
+    await savePointSnapshot(spec.accountId, def.id, baseValue(def.id));
+  }
 
   // 自定义指标
   if (spec.customs.length > 0) {
@@ -529,6 +734,30 @@ async function refreshDemo(accountId: string): Promise<{ errors: string[] }> {
   );
   await savePointSnapshot(accountId, "r2_storage", walk("r2_storage", -1, 1));
   await savePointSnapshot(accountId, "d1_storage", walk("d1_storage", -0.5, 0.5));
+
+  // 其余内置指标（KV / AI / Pages / Durable Objects / 构建 / 带宽等）同步模拟增长
+  const handled = new Set([
+    "workers_requests",
+    "d1_rows_read",
+    "d1_rows_written",
+    "r2_class_a",
+    "r2_class_b",
+    "r2_storage",
+    "d1_storage",
+  ]);
+  for (const def of METRIC_REGISTRY) {
+    if (handled.has(def.id)) continue;
+    if (def.period === "day") {
+      await saveDailySnapshot(
+        accountId,
+        def.id,
+        Math.max(0, walk(def.id, 0.2, 2)),
+        now
+      );
+    } else {
+      await savePointSnapshot(accountId, def.id, Math.max(0, walk(def.id, -1, 1.5)));
+    }
+  }
 
   // 自定义指标同步增长
   const customs = await db.customMetric.findMany({ where: { accountId } });

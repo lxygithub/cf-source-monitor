@@ -266,6 +266,209 @@ export function queryR2MonthlyOperations(
   }>(token, query, { accountTag: accountId, datetimeFrom, datetimeTo });
 }
 
+// ---------------------------------------------------------------------------
+// 扩展数据集（KV / Workers AI / Pages / Durable Objects / Vectorize 等）
+//
+// 注意：Cloudflare 对查询时间窗有上限（约 4w4d，且各数据集不同，
+// 例如 Images 只允许 4w2d1h），因此日维度走 7 天窗口、月维度按
+// 月初到今天（调用方需自行把窗口裁到安全范围内）。
+// ---------------------------------------------------------------------------
+
+export interface ExtendedUsageData {
+  kvOperations: {
+    dimensions: { date: string; actionType: string };
+    sum: { requests: number } | null;
+  }[];
+  kvStorage: {
+    dimensions: { date: string };
+    max: { byteCount: number } | null;
+  }[];
+  aiInference: {
+    dimensions: { date: string };
+    sum: { totalNeurons: number } | null;
+  }[];
+  d1Storage: {
+    dimensions: { date: string };
+    max: { databaseSizeBytes: number } | null;
+  }[];
+  workersSubrequests: {
+    dimensions: { date: string };
+    sum: { subrequests: number } | null;
+  }[];
+  workersCacheRequests: {
+    dimensions: { date: string };
+    sum: { requests: number } | null;
+  }[];
+  pagesFunctions: {
+    dimensions: { date: string };
+    sum: { requests: number; errors: number } | null;
+  }[];
+  durableObjects: {
+    dimensions: { date: string };
+    sum: { requests: number } | null;
+  }[];
+  hyperdriveQueries: { dimensions: { date: string }; count: number }[];
+  r2Bandwidth: {
+    dimensions: { date: string };
+    sum: { bytesDownload: number; bytesUpload: number } | null;
+  }[];
+  workersBuilds: {
+    dimensions: { date: string };
+    sum: { buildMinutes: number } | null;
+  }[];
+  vectorizeQueries: {
+    dimensions: { date: string };
+    sum: { queriedVectorDimensions: number } | null;
+  }[];
+  vectorizeStorage: {
+    dimensions: { date: string };
+    max: { storedVectorDimensions: number } | null;
+  }[];
+  imagesTransformations: {
+    dimensions: { date: string };
+    sum: { billableEventCount: number; requests: number } | null;
+  }[];
+  logpushUsage: {
+    dimensions: { date: string };
+    sum: { billableBytes: number } | null;
+  }[];
+}
+
+/** 查询扩展用量数据集（日维度窗口 + 月维度窗口） */
+export function queryExtendedUsage(
+  token: string,
+  accountId: string,
+  weekFrom: string,
+  weekTo: string,
+  monthFrom: string,
+  monthTo: string
+) {
+  const query = `
+    query ExtendedUsage(
+      $accountTag: String!
+      $weekFrom: Date!
+      $weekTo: Date!
+      $monthFrom: Date!
+      $monthTo: Date!
+    ) {
+      viewer {
+        accounts(filter: { accountTag: $accountTag }) {
+          kvOperations: kvOperationsAdaptiveGroups(
+            limit: 2000
+            filter: { date_geq: $weekFrom, date_leq: $weekTo }
+          ) {
+            dimensions { date actionType }
+            sum { requests }
+          }
+          kvStorage: kvStorageAdaptiveGroups(
+            limit: 200
+            filter: { date_geq: $weekFrom, date_leq: $weekTo }
+          ) {
+            dimensions { date }
+            max { byteCount }
+          }
+          aiInference: aiInferenceAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $weekFrom, date_leq: $weekTo }
+          ) {
+            dimensions { date }
+            sum { totalNeurons }
+          }
+          d1Storage: d1StorageAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $weekFrom, date_leq: $weekTo }
+          ) {
+            dimensions { date }
+            max { databaseSizeBytes }
+          }
+          workersSubrequests: workersSubrequestsAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $weekFrom, date_leq: $weekTo }
+          ) {
+            dimensions { date }
+            sum { subrequests }
+          }
+          workersCacheRequests: workersCacheRequestsAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $weekFrom, date_leq: $weekTo }
+          ) {
+            dimensions { date }
+            sum { requests }
+          }
+          pagesFunctions: pagesFunctionsInvocationsAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $weekFrom, date_leq: $weekTo }
+          ) {
+            dimensions { date }
+            sum { requests errors }
+          }
+          durableObjects: durableObjectsInvocationsAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $weekFrom, date_leq: $weekTo }
+          ) {
+            dimensions { date }
+            sum { requests }
+          }
+          hyperdriveQueries: hyperdriveQueriesAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $weekFrom, date_leq: $weekTo }
+          ) {
+            dimensions { date }
+            count
+          }
+          r2Bandwidth: r2BandwidthUsageAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $monthFrom, date_leq: $monthTo }
+          ) {
+            dimensions { date }
+            sum { bytesDownload bytesUpload }
+          }
+          workersBuilds: workersBuildsBuildMinutesAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $monthFrom, date_leq: $monthTo }
+          ) {
+            dimensions { date }
+            sum { buildMinutes }
+          }
+          vectorizeQueries: vectorizeQueriesAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $monthFrom, date_leq: $monthTo }
+          ) {
+            dimensions { date }
+            sum { queriedVectorDimensions }
+          }
+          vectorizeStorage: vectorizeStorageAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $monthFrom, date_leq: $monthTo }
+          ) {
+            dimensions { date }
+            max { storedVectorDimensions }
+          }
+          imagesTransformations: imagesTransformationsAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $monthFrom, date_leq: $monthTo }
+          ) {
+            dimensions { date }
+            sum { billableEventCount requests }
+          }
+          logpushUsage: logpushUsageAdaptiveGroups(
+            limit: 500
+            filter: { date_geq: $monthFrom, date_leq: $monthTo }
+          ) {
+            dimensions { date }
+            sum { billableBytes }
+          }
+        }
+      }
+    }
+  `;
+  return graphql<{ viewer: { accounts: ExtendedUsageData[] } }>(
+    token,
+    query,
+    { accountTag: accountId, weekFrom, weekTo, monthFrom, monthTo }
+  );
+}
+
 /** R2 操作类型 → Class A/B 分类（未收录的操作不计入） */
 const R2_CLASS_A_ACTIONS = new Set([
   "PutObject",

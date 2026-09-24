@@ -2,7 +2,13 @@
 
 export type MetricPeriod = "day" | "month" | "total";
 
-export type MetricCategory = "workers" | "storage" | "database" | "custom";
+export type MetricCategory =
+  | "workers"
+  | "storage"
+  | "database"
+  | "ai"
+  | "platform"
+  | "custom";
 
 /** 指标使用状态等级 */
 export type UsageLevel = "ok" | "warning" | "danger" | "over" | "nodata";
@@ -10,12 +16,31 @@ export type UsageLevel = "ok" | "warning" | "danger" | "over" | "nodata";
 /** 内置（可自动采集）指标 ID */
 export type BuiltinMetricId =
   | "workers_requests"
+  | "workers_subrequests"
+  | "workers_cache_requests"
+  | "workers_builds_minutes"
+  | "pages_functions_requests"
+  | "pages_functions_error_rate"
+  | "durable_objects_requests"
   | "r2_storage"
   | "r2_class_a"
   | "r2_class_b"
+  | "r2_bandwidth_download"
+  | "r2_bandwidth_upload"
+  | "kv_reads"
+  | "kv_writes"
+  | "kv_deletes"
+  | "kv_lists"
+  | "kv_storage"
   | "d1_rows_read"
   | "d1_rows_written"
-  | "d1_storage";
+  | "d1_storage"
+  | "vectorize_storage"
+  | "vectorize_queries"
+  | "hyperdrive_queries"
+  | "ai_neurons"
+  | "images_transformations"
+  | "logpush_bytes";
 
 /** 指标注册表条目（服务端定义） */
 export interface MetricDef {

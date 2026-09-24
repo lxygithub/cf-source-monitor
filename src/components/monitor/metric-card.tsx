@@ -11,6 +11,8 @@ import {
   Trash2,
   PenLine,
   TrendingUp,
+  Bot,
+  Layers,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -64,6 +66,8 @@ const CATEGORY_ICON: Record<string, { icon: typeof Zap; cls: string }> = {
   workers: { icon: Zap, cls: "text-orange-500 bg-orange-100 dark:bg-orange-950/60" },
   storage: { icon: HardDrive, cls: "text-amber-600 bg-amber-100 dark:bg-amber-950/60" },
   database: { icon: Database, cls: "text-emerald-600 bg-emerald-100 dark:bg-emerald-950/60" },
+  ai: { icon: Bot, cls: "text-sky-600 bg-sky-100 dark:bg-sky-950/60" },
+  platform: { icon: Layers, cls: "text-indigo-600 bg-indigo-100 dark:bg-indigo-950/60" },
   custom: { icon: Gauge, cls: "text-violet-600 bg-violet-100 dark:bg-violet-950/60" },
 };
 
