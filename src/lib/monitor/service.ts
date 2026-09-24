@@ -56,17 +56,18 @@ function pagesProjectId(scriptName: string) {
   return matched ? matched[1] : scriptName;
 }
 
-/** 资源名称缓存（KV namespace / D1 库名）：刷新时填充，读取状态时不再打 Cloudflare */
+/**
+ * 资源名称缓存（KV namespace / D1 库名 / Pages 项目名）
+ * 按「账号 + 作用域」分别缓存，只缓存非空结果：
+ * 缺权限或空表不落缓存，补齐权限后下次刷新即生效。
+ */
 const NAME_CACHE_TTL = 6 * 60 * 60 * 1000;
-const resourceNameCache = new Map<
-  string,
-  {
-    at: number;
-    ns: Map<string, string>;
-    db: Map<string, string>;
-    pj: Map<string, string>;
-  }
->();
+const nameCache = new Map<string, Map<string, string>>();
+const nameCacheAt = new Map<string, number>();
+
+function nameCacheKey(accountId: string, scope: SplitScope) {
+  return `${accountId}${SPLIT_SEP}${scope}`;
+}
 
 /**
  * 资源 ID 归一化：分析数据集的 namespaceId 是无连字符的 32 位十六进制，
@@ -83,34 +84,34 @@ function normalizeNameMap(map: Map<string, string>) {
 }
 
 async function refreshResourceNames(accountId: string, apiToken: string) {
-  const cached = resourceNameCache.get(accountId);
-  if (cached && Date.now() - cached.at < NAME_CACHE_TTL) return cached;
-  const [ns, databases] = await Promise.all([
-    getKvNamespaceNames(apiToken, accountId),
-    getD1DatabaseNames(apiToken, accountId),
-  ]);
-  const projects = await getPagesProjectNames(apiToken, accountId);
-  const entry = {
-    at: Date.now(),
-    ns: normalizeNameMap(ns),
-    db: normalizeNameMap(databases),
-    pj: normalizeNameMap(projects),
-  };
-  // 三个名称表都为空时（多为缺权限或账号确实没有资源）不落缓存，
-  // 否则补齐权限后要等 TTL 过期才会重新拉取
-  if (entry.ns.size + entry.db.size + entry.pj.size > 0) {
-    resourceNameCache.set(accountId, entry);
-  } else {
-    resourceNameCache.delete(accountId);
+  const loaders: [SplitScope, () => Promise<Map<string, string>>][] = [
+    ["ns", () => getKvNamespaceNames(apiToken, accountId)],
+    ["db", () => getD1DatabaseNames(apiToken, accountId)],
+    ["pj", () => getPagesProjectNames(apiToken, accountId)],
+  ];
+  const now = Date.now();
+  for (const [scope, load] of loaders) {
+    const key = nameCacheKey(accountId, scope);
+    const cached = nameCache.get(key);
+    const at = nameCacheAt.get(key) ?? 0;
+    if (cached && cached.size > 0 && now - at < NAME_CACHE_TTL) continue;
+    const names = normalizeNameMap(await load());
+    if (names.size > 0) {
+      nameCache.set(key, names);
+      nameCacheAt.set(key, now);
+    } else {
+      // 空结果（缺权限 / 该账号确实没有资源）不缓存，下次刷新重试
+      nameCache.delete(key);
+      nameCacheAt.delete(key);
+    }
   }
-  return entry;
 }
 
 function resourceName(accountId: string, scope: SplitScope, id: string) {
-  const cached = resourceNameCache.get(accountId);
-  const map =
-    scope === "ns" ? cached?.ns : scope === "db" ? cached?.db : cached?.pj;
-  return map?.get(normalizeResourceId(id)) ?? id;
+  return (
+    nameCache.get(nameCacheKey(accountId, scope))?.get(normalizeResourceId(id)) ??
+    id
+  );
 }
 
 function splitScopeLabel(scope: SplitScope) {
