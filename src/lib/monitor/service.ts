@@ -1,17 +1,20 @@
 // 监控服务层：多账号配置、用量刷新、快照存储、状态组装、演示模式
 
 import { db } from "@/lib/db";
-import { METRIC_REGISTRY, getLevel } from "./metrics";
+import { METRIC_MAP, METRIC_REGISTRY, getLevel } from "./metrics";
 import type {
   AccountGroup,
   AccountInfo,
+  MetricDef,
   MetricStatus,
   MonitorStatus,
 } from "./types";
 import {
   CloudflareApiError,
   classifyR2Action,
+  getD1DatabaseNames,
   getD1StorageBytes,
+  getKvNamespaceNames,
   queryR2MonthlyOperations,
   queryExtendedUsage,
   queryUsageTrend,
@@ -19,6 +22,80 @@ import {
 } from "./cloudflare";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// 拆分视图：KV 按 namespace、D1 按数据库
+// 指标 ID 形如 `kv_reads|ns|<namespaceId>`、`d1_storage|db|<uuid>`
+// ---------------------------------------------------------------------------
+
+const SPLIT_SEP = "|";
+
+function splitMetricId(base: string, scope: "ns" | "db", id: string) {
+  return `${base}${SPLIT_SEP}${scope}${SPLIT_SEP}${id}`;
+}
+
+function parseSplitMetricId(
+  metric: string
+): { base: string; scope: "ns" | "db"; id: string } | null {
+  const parts = metric.split(SPLIT_SEP);
+  if (parts.length !== 3) return null;
+  const [base, scope, id] = parts;
+  if (scope !== "ns" && scope !== "db") return null;
+  if (!METRIC_MAP.has(base) || !id) return null;
+  return { base, scope, id };
+}
+
+/** 资源名称缓存（KV namespace / D1 库名）：刷新时填充，读取状态时不再打 Cloudflare */
+const NAME_CACHE_TTL = 6 * 60 * 60 * 1000;
+const resourceNameCache = new Map<
+  string,
+  { at: number; ns: Map<string, string>; db: Map<string, string> }
+>();
+
+async function refreshResourceNames(accountId: string, apiToken: string) {
+  const cached = resourceNameCache.get(accountId);
+  if (cached && Date.now() - cached.at < NAME_CACHE_TTL) return cached;
+  const [ns, databases] = await Promise.all([
+    getKvNamespaceNames(apiToken, accountId),
+    getD1DatabaseNames(apiToken, accountId),
+  ]);
+  const entry = { at: Date.now(), ns, db: databases };
+  resourceNameCache.set(accountId, entry);
+  return entry;
+}
+
+function resourceName(accountId: string, scope: "ns" | "db", id: string) {
+  const cached = resourceNameCache.get(accountId);
+  const map = scope === "ns" ? cached?.ns : cached?.db;
+  return map?.get(id) ?? id;
+}
+
+/** 从快照中找出拆分视图指标，生成展示用定义 */
+async function dynamicMetricDefs(accountId: string): Promise<MetricDef[]> {
+  const rows = await db.usageSnapshot.findMany({
+    where: { accountId },
+    distinct: ["metric"],
+    select: { metric: true },
+  });
+  const defs: MetricDef[] = [];
+  for (const row of rows) {
+    const parsed = parseSplitMetricId(row.metric);
+    if (!parsed) continue;
+    const base = METRIC_MAP.get(parsed.base);
+    if (!base) continue;
+    const name = resourceName(accountId, parsed.scope, parsed.id);
+    defs.push({
+      ...base,
+      id: row.metric,
+      label: `${base.label} · ${name}`,
+      description: `${base.description}（拆分视图：${
+        parsed.scope === "ns" ? "KV 命名空间" : "D1 数据库"
+      } ${name}）`,
+    });
+  }
+  defs.sort((a, b) => a.id.localeCompare(b.id));
+  return defs;
+}
 
 /** 演示账号的 Cloudflare Account ID 集合 */
 export const DEMO_ACCOUNT_IDS = ["demo", "demo-b"];
@@ -320,6 +397,10 @@ async function refreshRealAccount(
       );
       extended = res?.viewer?.accounts?.[0] ?? null;
       if (!extended) errors.push("扩展指标采集失败：无法读取扩展数据集");
+      if (extended) {
+        // 名称表（KV namespace / D1 库名）用于拆分视图标签；失败不报错
+        await refreshResourceNames(accountId, apiToken);
+      }
     } catch (err) {
       errors.push(
         `扩展指标采集失败：${err instanceof Error ? err.message : "未知错误"}`
@@ -530,6 +611,98 @@ async function refreshRealAccount(
         (r) => r.max?.databaseSizeBytes ?? 0
       );
       if (d1AnalyticsBytes > 0) d1Bytes = d1AnalyticsBytes;
+
+      // ---- 拆分视图：KV 按 namespace ----
+      const kvActionToMetric: Record<string, string> = {
+        read: "kv_reads",
+        write: "kv_writes",
+        delete: "kv_deletes",
+        list: "kv_lists",
+      };
+      const kvNsMaps = new Map<string, Map<string, number>>();
+      for (const row of extended.kvOperations ?? []) {
+        const nsId = row.dimensions?.namespaceId;
+        const date = row.dimensions?.date;
+        const action = String(row.dimensions?.actionType ?? "").toLowerCase();
+        if (!nsId || !date || !kvActionToMetric[action]) continue;
+        const key = `${action}${SPLIT_SEP}${nsId}`;
+        const map = kvNsMaps.get(key) ?? new Map<string, number>();
+        addTo(map, date, row.sum?.requests ?? 0);
+        kvNsMaps.set(key, map);
+      }
+      for (const [key, map] of kvNsMaps) {
+        const [action, nsId] = key.split(SPLIT_SEP);
+        const metricId = splitMetricId(kvActionToMetric[action], "ns", nsId);
+        for (const [date, v] of map) {
+          await saveDailySnapshot(
+            accountId,
+            metricId,
+            v,
+            new Date(`${date}T00:00:00Z`)
+          );
+        }
+      }
+
+      // ---- 拆分视图：D1 按数据库 ----
+      const d1ReadByDb = new Map<string, Map<string, number>>();
+      const d1WrittenByDb = new Map<string, Map<string, number>>();
+      for (const row of extended.d1Queries ?? []) {
+        const dbId = row.dimensions?.databaseId;
+        const date = row.dimensions?.date;
+        if (!dbId || !date) continue;
+        const readMap = d1ReadByDb.get(dbId) ?? new Map<string, number>();
+        addTo(readMap, date, row.sum?.rowsRead ?? 0);
+        d1ReadByDb.set(dbId, readMap);
+        const writtenMap = d1WrittenByDb.get(dbId) ?? new Map<string, number>();
+        addTo(writtenMap, date, row.sum?.rowsWritten ?? 0);
+        d1WrittenByDb.set(dbId, writtenMap);
+      }
+      for (const [dbId, map] of d1ReadByDb) {
+        const metricId = splitMetricId("d1_rows_read", "db", dbId);
+        for (const [date, v] of map) {
+          await saveDailySnapshot(
+            accountId,
+            metricId,
+            v,
+            new Date(`${date}T00:00:00Z`)
+          );
+        }
+      }
+      for (const [dbId, map] of d1WrittenByDb) {
+        const metricId = splitMetricId("d1_rows_written", "db", dbId);
+        for (const [date, v] of map) {
+          await saveDailySnapshot(
+            accountId,
+            metricId,
+            v,
+            new Date(`${date}T00:00:00Z`)
+          );
+        }
+      }
+
+      const d1StorageRows = extended.d1Storage ?? [];
+      const d1LatestDate = latestDate(
+        d1StorageRows
+          .map((r) => r.dimensions?.date)
+          .filter((d): d is string => Boolean(d))
+      );
+      const d1StorageByDb = new Map<string, number>();
+      for (const row of d1StorageRows) {
+        if (row.dimensions?.date !== d1LatestDate) continue;
+        const dbId = row.dimensions?.databaseId;
+        if (!dbId) continue;
+        d1StorageByDb.set(
+          dbId,
+          Math.max(d1StorageByDb.get(dbId) ?? 0, row.max?.databaseSizeBytes ?? 0)
+        );
+      }
+      for (const [dbId, bytes] of d1StorageByDb) {
+        await savePointSnapshot(
+          accountId,
+          splitMetricId("d1_storage", "db", dbId),
+          bytes / 1024 ** 3
+        );
+      }
     }
 
     // D1 存储：分析数据集拿不到时回退 REST（需 D1:Read 权限）
@@ -824,9 +997,13 @@ export async function refreshAccounts(
 // ---------------------------------------------------------------------------
 
 async function latestSnapshotMap(
-  accountId: string
+  accountId: string,
+  extraMetricIds: string[] = []
 ): Promise<Map<string, { used: number; capturedAt: Date }>> {
-  const metrics = new Set(METRIC_REGISTRY.map((m) => m.id));
+  const metrics = new Set([
+    ...METRIC_REGISTRY.map((m) => m.id),
+    ...extraMetricIds,
+  ]);
   const map = new Map<string, { used: number; capturedAt: Date }>();
   for (const metric of metrics) {
     const snap = await db.usageSnapshot.findFirst({
@@ -860,11 +1037,15 @@ async function buildGroup(account: {
 }): Promise<AccountGroup> {
   const accountId = account.accountId;
   const quotaMap = await getQuotaMap(accountId);
-  const latest = await latestSnapshotMap(accountId);
+  const splitDefs = await dynamicMetricDefs(accountId);
+  const latest = await latestSnapshotMap(
+    accountId,
+    splitDefs.map((d) => d.id)
+  );
 
   const metrics: MetricStatus[] = [];
 
-  for (const def of METRIC_REGISTRY) {
+  for (const def of [...METRIC_REGISTRY, ...splitDefs]) {
     const used = latest.get(def.id)?.used ?? null;
     const quota = quotaMap.get(def.id) ?? def.defaultQuota;
     const percent = used === null ? null : (used / quota) * 100;

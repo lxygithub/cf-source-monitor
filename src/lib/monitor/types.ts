@@ -44,7 +44,8 @@ export type BuiltinMetricId =
 
 /** 指标注册表条目（服务端定义） */
 export interface MetricDef {
-  id: BuiltinMetricId;
+  /** 内置指标 ID，或拆分视图 ID（如 `kv_reads|ns|<namespaceId>`） */
+  id: string;
   label: string;
   description: string;
   unit: string;

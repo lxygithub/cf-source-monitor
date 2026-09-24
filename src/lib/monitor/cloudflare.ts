@@ -276,7 +276,7 @@ export function queryR2MonthlyOperations(
 
 export interface ExtendedUsageData {
   kvOperations: {
-    dimensions: { date: string; actionType: string };
+    dimensions: { date: string; actionType: string; namespaceId: string };
     sum: { requests: number } | null;
   }[];
   kvStorage: {
@@ -288,8 +288,12 @@ export interface ExtendedUsageData {
     sum: { totalNeurons: number } | null;
   }[];
   d1Storage: {
-    dimensions: { date: string };
+    dimensions: { date: string; databaseId: string };
     max: { databaseSizeBytes: number } | null;
+  }[];
+  d1Queries: {
+    dimensions: { date: string; databaseId: string };
+    sum: { rowsRead: number; rowsWritten: number } | null;
   }[];
   workersSubrequests: {
     dimensions: { date: string };
@@ -357,7 +361,7 @@ export function queryExtendedUsage(
             limit: 2000
             filter: { date_geq: $weekFrom, date_leq: $weekTo }
           ) {
-            dimensions { date actionType }
+            dimensions { date actionType namespaceId }
             sum { requests }
           }
           kvStorage: kvStorageAdaptiveGroups(
@@ -378,8 +382,15 @@ export function queryExtendedUsage(
             limit: 500
             filter: { date_geq: $weekFrom, date_leq: $weekTo }
           ) {
-            dimensions { date }
+            dimensions { date databaseId }
             max { databaseSizeBytes }
+          }
+          d1Queries: d1QueriesAdaptiveGroups(
+            limit: 1000
+            filter: { date_geq: $weekFrom, date_leq: $weekTo }
+          ) {
+            dimensions { date databaseId }
+            sum { rowsRead rowsWritten }
           }
           workersSubrequests: workersSubrequestsAdaptiveGroups(
             limit: 500
@@ -510,4 +521,36 @@ export async function getD1StorageBytes(
   );
   if (!rows) return null;
   return rows.reduce((acc, row) => acc + (row.file_size ?? 0), 0);
+}
+
+/** KV namespace 名称表（id → 名称）。需要 Workers KV Storage:Read，失败返回空表 */
+export async function getKvNamespaceNames(
+  token: string,
+  accountId: string
+): Promise<Map<string, string>> {
+  const rows = await restGet<{ id?: string; title?: string }[]>(
+    token,
+    `/accounts/${accountId}/storage/kv/namespaces?per_page=100`
+  );
+  const map = new Map<string, string>();
+  for (const row of rows ?? []) {
+    if (row?.id) map.set(row.id, row.title || row.id);
+  }
+  return map;
+}
+
+/** D1 数据库名称表（uuid → 名称）。需要 D1:Read，失败返回空表 */
+export async function getD1DatabaseNames(
+  token: string,
+  accountId: string
+): Promise<Map<string, string>> {
+  const rows = await restGet<{ uuid?: string; name?: string }[]>(
+    token,
+    `/accounts/${accountId}/d1/database`
+  );
+  const map = new Map<string, string>();
+  for (const row of rows ?? []) {
+    if (row?.uuid) map.set(row.uuid, row.name || row.uuid);
+  }
+  return map;
 }
