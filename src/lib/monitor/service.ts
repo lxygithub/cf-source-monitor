@@ -323,7 +323,8 @@ async function saveDailySnapshot(
     });
   } else {
     await db.usageSnapshot.create({
-      data: { accountId, metric, used, capturedAt: new Date() },
+      // 回填历史日期时必须落在对应那天，否则 7 天历史会全部挤到"今天"
+      data: { accountId, metric, used, capturedAt: dayStart },
     });
   }
 }
