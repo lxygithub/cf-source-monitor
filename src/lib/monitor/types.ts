@@ -119,6 +119,8 @@ export interface AccountInfo {
 export interface MonitorStatus {
   /** 当前视图："all" 或账号数据库 ID */
   view: string;
+  /** 默认视图（服务端保存，用于首次打开时自动选中） */
+  defaultView: string;
   /** 当前视图下的账号分组 */
   accounts: AccountGroup[];
   /** 全部账号列表（用于切换器 / 账号管理） */

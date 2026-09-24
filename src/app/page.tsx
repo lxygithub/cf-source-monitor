@@ -72,9 +72,50 @@ export default function MonitorPage() {
     if (saved) {
       viewRef.current = saved;
       setView(saved);
+      void fetchStatus(saved).finally(() => setLoading(false));
+      return;
     }
-    void fetchStatus(saved ?? undefined).finally(() => setLoading(false));
+    // 本地没有记录时，用服务端保存的默认视图
+    void fetchStatus("all")
+      .then(async () => {
+        try {
+          const res = await fetch("/api/settings", { cache: "no-store" });
+          const data = (await res.json()) as { defaultView?: string };
+          const dv = data.defaultView;
+          if (dv && dv !== "all") {
+            viewRef.current = dv;
+            setView(dv);
+            await fetchStatus(dv);
+          }
+        } catch {
+          // 忽略：保持全部账号视图
+        }
+      })
+      .finally(() => setLoading(false));
   }, [fetchStatus]);
+
+  const handleSetDefaultView = useCallback(
+    async (v: string) => {
+      const next = status?.defaultView === v ? "all" : v;
+      try {
+        const res = await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ defaultView: next }),
+        });
+        const data = (await res.json()) as { ok: boolean; error?: string };
+        if (!data.ok) {
+          toast.error(data.error ?? "设置失败");
+          return;
+        }
+        toast.success(next === "all" ? "已取消默认视图" : "已设为默认视图");
+        await fetchStatus();
+      } catch {
+        toast.error("网络错误，请稍后重试");
+      }
+    },
+    [fetchStatus, status?.defaultView]
+  );
 
   const handleToggleFavorite = useCallback(
     async (m: MetricStatus) => {
@@ -207,6 +248,7 @@ export default function MonitorPage() {
         accounts={status?.accountList ?? []}
         accountCount={status?.accountCount ?? 0}
         view={view}
+        defaultView={status?.defaultView ?? "all"}
         lastRefreshAt={status?.lastRefreshAt ?? null}
         refreshing={refreshing}
         autoRefresh={autoRefresh}
@@ -217,6 +259,7 @@ export default function MonitorPage() {
           window.localStorage.setItem("cf-monitor:view", v);
           void fetchStatus(v);
         }}
+        onSetDefaultView={(v) => void handleSetDefaultView(v)}
         onRefresh={() => void handleRefresh()}
         onOpenAccounts={() => setAccountsOpen(true)}
       />

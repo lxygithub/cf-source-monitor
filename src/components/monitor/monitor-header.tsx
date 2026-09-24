@@ -1,6 +1,6 @@
 "use client";
 
-import { Cloud, RefreshCw, Users } from "lucide-react";
+import { Cloud, RefreshCw, Star, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -18,11 +18,13 @@ interface MonitorHeaderProps {
   accounts: AccountInfo[];
   accountCount: number;
   view: string;
+  defaultView: string;
   lastRefreshAt: string | null;
   refreshing: boolean;
   autoRefresh: boolean;
   onAutoRefreshChange: (v: boolean) => void;
   onViewChange: (v: string) => void;
+  onSetDefaultView: (v: string) => void;
   onRefresh: () => void;
   onOpenAccounts: () => void;
 }
@@ -31,11 +33,13 @@ export function MonitorHeader({
   accounts,
   accountCount,
   view,
+  defaultView,
   lastRefreshAt,
   refreshing,
   autoRefresh,
   onAutoRefreshChange,
   onViewChange,
+  onSetDefaultView,
   onRefresh,
   onOpenAccounts,
 }: MonitorHeaderProps) {
@@ -58,22 +62,50 @@ export function MonitorHeader({
 
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
           {accountCount >= 2 && (
-            <Select value={view} onValueChange={onViewChange}>
-              <SelectTrigger
-                className="h-9 w-[118px] text-xs sm:w-[150px] sm:text-sm"
-                aria-label="切换账号视图"
-              >
-                <SelectValue placeholder="账号" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部账号（{accountCount}）</SelectItem>
-                {accounts.map((a) => (
-                  <SelectItem key={a.id} value={a.id}>
-                    {a.name}
+            <div className="flex items-center gap-1">
+              <Select value={view} onValueChange={onViewChange}>
+                <SelectTrigger
+                  className="h-9 w-[118px] text-xs sm:w-[150px] sm:text-sm"
+                  aria-label="切换账号视图"
+                >
+                  <SelectValue placeholder="账号" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">
+                    全部账号（{accountCount}）
+                    {defaultView === "all" ? "（默认）" : ""}
                   </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+                  {accounts.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.name}
+                      {defaultView === a.id ? "（默认）" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={`size-8 ${
+                  defaultView === view ? "text-amber-500" : "text-muted-foreground"
+                }`}
+                onClick={() => onSetDefaultView(view)}
+                aria-label={
+                  defaultView === view ? "取消默认视图" : "设为默认视图"
+                }
+                title={
+                  defaultView === view
+                    ? "当前已是默认视图，点击取消"
+                    : "把当前视图设为默认（跨设备生效）"
+                }
+              >
+                <Star
+                  className={`size-4 ${
+                    defaultView === view ? "fill-amber-400" : ""
+                  }`}
+                />
+              </Button>
+            </div>
           )}
           <div className="hidden items-center gap-2 md:flex">
             <Switch

@@ -297,12 +297,46 @@ export async function deleteAccount(id: string) {
   await db.usageSnapshot.deleteMany({ where: { accountId: account.accountId } });
   await db.customMetric.deleteMany({ where: { accountId: account.accountId } });
   await db.metricFavorite.deleteMany({ where: { accountId: account.accountId } });
+  // 默认视图指向被删除的账号时一并清除
+  if ((await getDefaultView()) === account.id) {
+    await db.appSetting.deleteMany({ where: { key: DEFAULT_VIEW_KEY } });
+  }
   await db.cfAccount.delete({ where: { id } });
 }
 
 // ---------------------------------------------------------------------------
 // 卡片收藏
 // ---------------------------------------------------------------------------
+
+const DEFAULT_VIEW_KEY = "defaultView";
+
+/** 默认账号视图（"all" 表示全部账号） */
+export async function getDefaultView(): Promise<string> {
+  const row = await db.appSetting.findUnique({
+    where: { key: DEFAULT_VIEW_KEY },
+  });
+  return row?.value || "all";
+}
+
+/** 设置默认账号视图；传 "all" 表示清除默认（回到全部账号） */
+export async function setDefaultView(view: string) {
+  const value = view?.trim() || "all";
+  if (value === "all") {
+    await db.appSetting.deleteMany({ where: { key: DEFAULT_VIEW_KEY } });
+    return;
+  }
+  // 只接受存在的账号，避免存下已删除的视图
+  const accounts = await getAccounts();
+  if (!accounts.some((a) => a.id === value)) {
+    await db.appSetting.deleteMany({ where: { key: DEFAULT_VIEW_KEY } });
+    return;
+  }
+  await db.appSetting.upsert({
+    where: { key: DEFAULT_VIEW_KEY },
+    create: { key: DEFAULT_VIEW_KEY, value },
+    update: { value },
+  });
+}
 
 /** 收藏的指标 ID 集合（accountId 为 Cloudflare Account ID） */
 export async function listFavorites(accountId: string): Promise<Set<string>> {
@@ -1360,6 +1394,7 @@ export async function getStatus(view = "all"): Promise<MonitorStatus> {
 
   return {
     view,
+    defaultView: await getDefaultView(),
     accounts: groups,
     accountList,
     accountCount: accountList.length,

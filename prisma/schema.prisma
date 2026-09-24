@@ -61,3 +61,10 @@ model MetricFavorite {
   createdAt DateTime @default(now())
   @@unique([accountId, metric])
 }
+
+// 应用级设置（键值对，如默认账号视图 defaultView）
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
