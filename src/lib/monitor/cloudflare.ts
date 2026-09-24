@@ -560,13 +560,29 @@ export async function getPagesProjectNames(
   token: string,
   accountId: string
 ): Promise<Map<string, string>> {
-  const rows = await restGet<{ id?: string; name?: string }[]>(
-    token,
-    `/accounts/${accountId}/pages/projects?per_page=100`
-  );
+  // 注意：该端点不接受 per_page，传了会 400
+  const rows = await restGet<{
+    id?: string;
+    name?: string;
+    production_script_name?: string;
+    preview_script_name?: string;
+  }[]>(token, `/accounts/${accountId}/pages/projects`);
   const map = new Map<string, string>();
   for (const row of rows ?? []) {
-    if (row?.id) map.set(row.id, row.name || row.id);
+    const name = row?.name;
+    if (!name) continue;
+    if (row.id) map.set(row.id, name);
+    // 分析数据集里的 scriptName 用的是数字项目 ID（pages-worker--<id>-production），
+    // 官方在 pages_project 里直接给出了这两个字段，用它建立映射
+    for (const scriptName of [
+      row.production_script_name,
+      row.preview_script_name,
+    ]) {
+      const matched = /^pages-worker--(.+?)-(production|preview|staging)$/.exec(
+        scriptName ?? ""
+      );
+      if (matched) map.set(matched[1], name);
+    }
   }
   return map;
 }
